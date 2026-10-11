@@ -162,7 +162,8 @@ export class PhoneAudio {
 if (typeof document !== 'undefined') {
 const $ = id => document.getElementById(id);
 const canvas = $('screen');
-const context = canvas.getContext('2d', {alpha: false});
+// desynchronized lets Chromium present frames without waiting on the compositor.
+const context = canvas.getContext('2d', {alpha: false, desynchronized: true});
 const MAX_DECODE_QUEUE = 6, MAX_RETRIES = 6, MAX_OVERLOAD_RECOVERIES = 3, MAX_PACKET_BYTES = 8 * 1024 * 1024;
 let socket, decoder, retryTimer, connectTimer, stableTimer;
 let authenticated = false, csrf = '', mode = '', phoneId = '', generation = 0, failures = 0;
@@ -254,7 +255,7 @@ function createDecoder(codec, current) {
         context.drawImage(frame, 0, 0, canvas.width, canvas.height);
         rendered++; receivedFrames++; $('screen-overlay').hidden = true;
         if (receivedFrames === 1) {
-          clearTimeout(connectTimer); status('Connected', true);
+          clearTimeout(connectTimer); status('Connected', true); void keepAwake();
           settingsState = ''; updateSettingsStatus();
           // One frame must not reset the retry cap on a repeatedly failing stream.
           stableTimer = setTimeout(() => { if (current === generation) failures = 0; }, 30000);
@@ -513,7 +514,7 @@ canvas.addEventListener('pointerdown', event => {
 });
 canvas.addEventListener('pointermove', event => {
   const pointer = pointers.get(event.pointerId); if (!pointer) return; event.preventDefault(); pointer.event = event;
-  if (performance.now() - pointer.last >= 12) { touch(event, 2); pointer.last = performance.now(); }
+  if (performance.now() - pointer.last >= (gameMode ? 6 : 12)) { touch(event, 2); pointer.last = performance.now(); }
 });
 for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) canvas.addEventListener(name, event => {
   if (!pointers.has(event.pointerId)) return;
@@ -551,9 +552,47 @@ document.addEventListener('visibilitychange', () => {
 $('text-form').addEventListener('submit', event => { event.preventDefault(); const input = $('text-input'); if (!input.value) return; if (new TextEncoder().encode(input.value).length > 4096) { status('Text limit: 4096 UTF-8 bytes'); return; } if (send({type: 'text', text: input.value})) input.value = ''; else status('Wait for the phone to connect'); });
 setInterval(() => {
   const now = performance.now();
-  if (receivedFrames) $('fps').textContent = `${Math.round((rendered - lastRendered) * 1000 / (now - lastFpsTime))} FPS`;
+  if (receivedFrames) $('fps').textContent = $('hud-fps').textContent = `${Math.round((rendered - lastRendered) * 1000 / (now - lastFpsTime))} FPS`;
   lastRendered = rendered; lastFpsTime = now;
 }, 1000);
+// Screen wake lock while streaming; browsers drop it when hidden, so reacquire on return.
+let wakeLock = null, gameMode = false, beforeGame = null;
+async function keepAwake() {
+  if (wakeLock || document.hidden || !globalThis.navigator?.wakeLock || !socket) return;
+  try { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } catch {}
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && receivedFrames) void keepAwake(); });
+async function setGameMode(on) {
+  if (on === gameMode) return;
+  gameMode = on; document.body.classList.toggle('game-mode', on);
+  $('game-hud').hidden = !on; $('game-mode').setAttribute('aria-pressed', String(on));
+  if (on) {
+    // Gaming profile: smaller queues instantly; encoder change goes through the normal single Apply.
+    beforeGame = {quality: preferences.quality, latency: preferences.latency};
+    preferences.latency = 'gaming';
+    if (preferences.quality !== 'gaming') { encoderDraft = sanitizePreferences({...encoderDraft, quality: 'gaming'}); $('apply-settings').disabled = false; $('apply-settings').click(); }
+    else { audio.clearScheduled(); savePreferences(); syncPreferences(); }
+    try { if (!document.fullscreenElement) await $('viewer-main').requestFullscreen({navigationUI: 'hide'}); } catch {}
+    void keepAwake();
+  } else {
+    if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch {} }
+    const restore = beforeGame; beforeGame = null;
+    if (restore) {
+      preferences.latency = restore.latency;
+      if (restore.quality !== preferences.quality) { encoderDraft = sanitizePreferences({...encoderDraft, quality: restore.quality}); $('apply-settings').disabled = false; $('apply-settings').click(); }
+      else { audio.clearScheduled(); savePreferences(); syncPreferences(); }
+    }
+  }
+  fit(); canvas.focus({preventScroll: true});
+}
+$('game-mode').addEventListener('click', () => void setGameMode(!gameMode));
+$('exit-game').addEventListener('click', () => void setGameMode(false));
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && gameMode) void setGameMode(false); });
+$('toggle-keyboard').addEventListener('click', () => {
+  const show = $('text-form').hidden; $('text-form').hidden = !show;
+  $('toggle-keyboard').setAttribute('aria-expanded', String(show));
+  if (show) $('text-input').focus(); else canvas.focus({preventScroll: true});
+});
 window.addEventListener('pagehide', () => { authenticated = false; authGeneration++; disconnect(); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 async function init() {
