@@ -107,7 +107,7 @@ if [[ -z $NODE ]]; then
 fi
 PACKAGES=(ca-certificates curl git python3 tar xz-utils unzip coreutils findutils
   util-linux e2fsprogs iproute2 procps psmisc kmod libc-bin
-  qemu-system-x86 slirp4netns libstdc++6 libgcc-s1 zlib1g libnss3
+  qemu-system-x86 slirp4netns nftables libseccomp2 libstdc++6 libgcc-s1 zlib1g libnss3
   libx11-6 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3
   libxi6 libxrandr2 libxrender1 libxtst6 libpulse0 libgl1 libegl1 libvulkan1
   libdrm2 libgbm1 libdbus-1-3 libfontconfig1 libfreetype6 libxkbcommon0

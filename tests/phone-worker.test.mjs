@@ -225,3 +225,24 @@ test('bounded control burst closes abusive peer', async t => {
   for (let i = 0; i < 600; i++) ws.send(JSON.stringify({ type: 'key', keyCode: 3, action: 0 }));
   release.resolve(); assert.equal((await closed)[0], 1008);
 });
+
+test('audio wire tags preserve raw payload and timestamp independently of H264', () => {
+  const data=Buffer.from([0,128,255,127]);
+  assert.equal(encodePacket({type:'data',pts:123n,data},true).toString('hex'),'03000000000000007b0080ff7f');
+  assert.equal(encodePacket({type:'configuration',data},true)[0],4);
+});
+test('worker start validates audio codec and fractional encoded scale, not guest geometry', async () => {
+  const {validStart,streamOptions}=await import('../lib/phone-worker.mjs');
+  assert(validStart({type:'start',quality:'gaming',scale:.5,audio:'raw'}));
+  for(const m of [{scale:50},{audio:'aac'},{scale:0},{latency:'gaming'}])assert.equal(validStart({type:'start',quality:'balanced',...m}),false);
+  assert.deepEqual(streamOptions({quality:'gaming',scale:.5,audio:'raw'}),{videoBitRate:2500000,maxSize:480,maxFps:60,audio:true,audioCodec:'raw',audioBitRate:128000});
+  assert.equal(streamOptions({quality:'balanced'}).audio,true);
+  assert.equal(streamOptions({quality:'balanced',audio:'off'}).audio,false);
+});
+test('installed audioStream success/disabled/errored API is drained and bounded without ending video', async () => {
+  const {pumpAudio}=await import('../lib/phone-worker.mjs');
+  const sent=[],metadata=[];
+  const state={stopped:false,ws:{readyState:WebSocket.OPEN,bufferedAmount:0,send:data=>sent.push(data),close:()=>{}},client:{audioStream:Promise.resolve({type:'success',codec:{optionValue:'raw'},stream:new ReadableStream({start(c){c.enqueue({type:'data',pts:20n,data:Buffer.from([0,0,0,0])});c.close();}})})}};
+  await pumpAudio(state,m=>metadata.push(m));assert.deepEqual(metadata[0],{type:'audio',supported:true,codec:'pcm',sampleRate:48000,channels:2});assert.equal(sent[0][0],3);
+  for(const type of ['disabled','errored']){metadata.length=0;state.client.audioStream=Promise.resolve({type});await pumpAudio(state,m=>metadata.push(m));assert.equal(metadata[0].supported,false);}
+});

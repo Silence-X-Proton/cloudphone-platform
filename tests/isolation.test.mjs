@@ -9,7 +9,8 @@ import { MiB, GiB, hostUsage, validateRequest } from '../lib/resources.mjs';
 // ALL privileged commands and host capability/resource readings are mocks.
 // Only small ordinary files in mkdtemp are real; NO mount/loop/systemd/KVM is invoked.
 async function fixture(t, config = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cloudphone-unit-'));
+  // Descriptor-safe readiness forbids world-writable ancestors such as /tmp.
+  const dir = await fs.mkdtemp(path.join('/a0/usr/workdir', 'cloudphone-unit-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const calls = []; const images = new Map(); const loops = new Map(); const mounts = new Map(); const units = new Map();
   const io = new Proxy(fs, { get(target, key) {
@@ -20,11 +21,16 @@ async function fixture(t, config = {}) {
     };
     if (key === 'readlink') return async p => { if (['/proc/self/ns/mnt', '/proc/1/ns/mnt'].includes(p)) return 'mnt:[1]'; if (p === '/proc/self/ns/net') return 'net:[1]'; if (p === '/proc/123/ns/net') return 'net:[2]'; throw new Error('Unexpected namespace read ' + p); };
     if (key === 'readFile') return async (p, ...args) => {
+      if (p === '/proc/123/stat') return '123 (node) S ' + Array(18).fill('0').join(' ') + ' 55';
+      if (p === '/proc/123/status') return 'Uid:\t200000\t200000\t200000\t200000\n';
+      if (p === '/proc/123/cgroup') return '0::/system.slice/' + [...units.keys()].find(unit => units.get(unit) === 'active') + '\n';
       if (p === '/proc/meminfo') return 'MemTotal:       33554432 kB\nMemAvailable:   31457280 kB\n';
       if (p.startsWith('/sys/fs/cgroup/')) {
+        if (p.endsWith('cgroup.procs')) return '123\n';
         if (p.endsWith('memory.current')) return String(123 * MiB);
         if (p.endsWith('memory.max')) return String(4096 * MiB);
         if (p.endsWith('memory.swap.max')) return '0';
+        if (p.endsWith('memory.oom.group')) return '1';
         if (p.endsWith('cgroup.events')) return 'populated 0\n';
         throw new Error('Unexpected mocked host read: ' + p);
       }
@@ -37,6 +43,7 @@ async function fixture(t, config = {}) {
   const runner = async (exe, args) => {
     calls.push({ exe, args });
     const ok = stdout => ({ code: 0, stdout: stdout || '', stderr: '' });
+    if (exe === '/usr/bin/bash' && args[0].endsWith('/phone-identities.sh') && args[1] === '--verify') return ok();
     if (exe.endsWith('/getent') && args[1] === 'cloudphone-web') return ok('cloudphone-web:x:990:');
     if (exe.endsWith('/getent')) return { code: 2, stdout: '', stderr: '' };
     if (exe.endsWith('/fallocate')) { images.set(args.at(-1), Number(args[1])); return ok(); }
@@ -58,7 +65,7 @@ async function fixture(t, config = {}) {
       await fs.rename(mount, mount + '-mock-data'); await fs.mkdir(mount);
       return ok();
     }
-    if (exe.endsWith('/systemd-run')) { const unit = args[args.indexOf('--unit') + 1]; units.set(unit, 'active'); await fs.writeFile(path.join(dir, unit.slice(11, -8), 'volume/run/ready'), args.at(-1)); return ok(); }
+    if (exe.endsWith('/systemd-run')) { const unit = args[args.indexOf('--unit') + 1]; units.set(unit, 'active'); const ready = path.join(dir, unit.slice(11, -8), 'volume/run/ready'); await fs.writeFile(ready, args.at(-1), {mode:0o600}); const r = JSON.parse(await fs.readFile(path.join(dir, unit.slice(11, -8), 'record.json'), 'utf8')); await fs.chown(ready, 200000 + r.adbPort - 15000, 200000 + r.adbPort - 15000); return ok(); }
     if (exe.endsWith('/systemctl')) {
       const unit = args[1];
       if (args[0] === 'show') {
@@ -76,7 +83,7 @@ async function fixture(t, config = {}) {
   manager.capabilities = async () => ({ supported: true, checks: {} });
   return { manager, dir, calls, images, loops, mounts, units, io };
 }
-const request = { name: 'Phone', guestRamMiB: 2048, hostMemoryMiB: 4096, diskGiB: 12 };
+const request = { name: 'Phone', guestRamMiB: 2560, hostMemoryMiB: 4096, diskGiB: 12 };
 
 test('validation rejects paths, shell fields, invalid sizes and malformed IDs', async t => {
   const { manager, calls } = await fixture(t);
@@ -314,4 +321,184 @@ test('sandbox-hidden SDK roots rejected and human hyphenated names accepted', ()
   for (const sdkDir of ['/home/sdk', '/run/sdk', '/tmp/sdk', '/srv/cloudphone/sdk']) assert.throws(() => new PhoneManager({ sdkDir }), /hidden/);
   assert.equal(validateRequest({ ...request, name: 'My-phone' }).name, 'My-phone');
   assert.throws(() => validateRequest({ ...request, name: 'bad' + String.fromCharCode(1) }), /phone name/);
+});
+
+test('prepare rejects symlinked run parent before privileged stale-file cleanup', async t => {
+  const { manager, dir } = await fixture(t);
+  const r = await manager.create(request); const record = await manager.read(r.id);
+  record.webGid = 990; await manager.attach(record);
+  const outside = path.join(dir, 'outside'); await fs.mkdir(outside);
+  await fs.writeFile(path.join(outside, 'ready'), 'must survive');
+  await fs.symlink(outside, path.join(manager.paths(r.id).mount, 'run'));
+  await assert.rejects(manager.prepare(record), /Unsafe/);
+  assert.equal(await fs.readFile(path.join(outside, 'ready'), 'utf8'), 'must survive');
+});
+
+test('prepare replaces tenant config hardlinks without truncating linked inode', async t => {
+  const { manager } = await fixture(t);
+  const r = await manager.create(request); const record = await manager.read(r.id);
+  record.webGid = 990; await manager.attach(record); await manager.prepare(record);
+  const root = manager.paths(r.id).mount;
+  const config = path.join(root, 'avd/phone.avd/config.ini');
+  const victim = path.join(root, 'home/preserved');
+  await fs.writeFile(victim, 'must survive'); await fs.unlink(config); await fs.link(victim, config);
+  await manager.prepare(record);
+  assert.equal(await fs.readFile(victim, 'utf8'), 'must survive');
+  assert.equal((await fs.lstat(config)).nlink, 1);
+});
+
+import { assertProcessBoundary, openBudgetLog } from '../lib/runtime-attestation.mjs';
+
+test('runtime attestation requires exact UID cgroup memory swap net and stable PID identity', async () => {
+  const id = 'a'.repeat(16), group = `/system.slice/cloudphone-${id}.service`;
+  const contract = { id, uid: 200000, memoryBytes: 4096 * MiB, hostNetNamespace: 'net:[1]' };
+  const stat = `12 (process ) with spaces) S ${Array(18).fill('0').join(' ')} 55`;
+  const files = { '/proc/self/stat': stat, '/proc/self/status': 'Uid:\t200000\t200000\t200000\t200000\n',
+    '/proc/self/cgroup': `0::${group}\n`, [`/sys/fs/cgroup${group}/memory.max`]: String(contract.memoryBytes),
+    [`/sys/fs/cgroup${group}/memory.swap.max`]: '0' };
+  const io = { readFile: async p => { assert.ok(p in files, p); return files[p]; }, readlink: async () => 'net:[2]' };
+  assert.equal((await assertProcessBoundary(contract, { io })).starttime, '55');
+  for (const [file, wrong] of [['/proc/self/status', 'Uid:\t0\t0\t0\t0\n'], ['/proc/self/cgroup', '0::/other'],
+    [`/sys/fs/cgroup${group}/memory.max`, 'max'], [`/sys/fs/cgroup${group}/memory.swap.max`, '1']]) {
+    const original = files[file]; files[file] = wrong;
+    await assert.rejects(assertProcessBoundary(contract, { io }), /boundary|cgroup/); files[file] = original;
+  }
+  await assert.rejects(assertProcessBoundary(contract, { io: { ...io, readlink: async () => 'net:[1]' } }), /network/);
+  let reads = 0;
+  await assert.rejects(assertProcessBoundary(contract, { io: { ...io, readFile: async p => p.endsWith('/stat') && ++reads === 2 ? stat.replace(/55$/, '56') : io.readFile(p) } }), /identity changed/);
+});
+
+test('budget log descriptors reject links and wrong filesystem without modifying victims', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'phone-logs-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const dev = (await fs.stat(dir)).dev, target = path.join(dir, 'target');
+  await fs.writeFile(target, 'preserved');
+  await fs.symlink(target, path.join(dir, 'symlink'));
+  await assert.rejects(openBudgetLog(path.join(dir, 'symlink'), dev));
+  await fs.link(target, path.join(dir, 'hardlink'));
+  await assert.rejects(openBudgetLog(path.join(dir, 'hardlink'), dev), /Unsafe log/);
+  await assert.rejects(openBudgetLog(path.join(dir, 'wrong-device'), -1), /Unsafe log/);
+  const h = await openBudgetLog(path.join(dir, 'valid'), dev); await h.writeFile('log'); await h.close();
+  assert.equal(await fs.readFile(target, 'utf8'), 'preserved');
+});
+
+test('systemd runtime directory is bound to disk budget, never exposed host run', async t => {
+  const { manager, calls } = await fixture(t);
+  const r = await manager.create(request); await manager.start(r.id);
+  const args = calls.find(c => c.exe.endsWith('/systemd-run')).args;
+  assert.ok(args.includes(`InaccessiblePaths=${manager.stateDir}`));
+  assert.ok(args.some(arg => arg.startsWith('BindPaths=') && arg.includes(`${manager.paths(r.id).mount}/run:/run`)));
+  assert.ok(args.includes('ReadWritePaths=/srv/cloudphone /tmp /var/tmp /dev/shm /run'));
+  assert.equal(JSON.parse(args.at(-2)).memoryBytes, request.hostMemoryMiB * MiB);
+});
+
+test('missing main PID and foreign resident fail live cgroup verification', async t => {
+  const { manager, io } = await fixture(t);
+  const r = await manager.create(request); await manager.start(r.id);
+  for (const residents of ['999\n', '123\n999\n']) {
+    manager.io = new Proxy(io, { get(target, key) {
+      if (key === 'readFile') return async (p, ...rest) => {
+        if (p.endsWith('/cgroup.procs')) return residents;
+        if (p === '/proc/999/stat') return '999 (foreign) S ' + Array(18).fill('0').join(' ') + ' 66';
+        if (p === '/proc/999/status') return 'Uid:\t0\t0\t0\t0\n';
+        return target.readFile(p, ...rest);
+      };
+      return target[key];
+    } });
+    await assert.rejects(manager.verifyLimits(await manager.read(r.id)), /membership|UID/);
+  }
+});
+
+
+test('production launch uses supported group OOM policy and verified managed identity', async t => {
+  const { manager, calls } = await fixture(t);
+  const r = await manager.create(request); await manager.start(r.id);
+  const run = calls.find(c => c.exe.endsWith('/systemd-run'));
+  assert.ok(run.args.includes('OOMPolicy=kill'));
+  assert.ok(!run.args.some(a => a.startsWith('MemoryOOMGroup=')));
+  assert.ok(calls.some(c => c.exe === '/usr/bin/bash' && c.args[1] === '--verify' && c.args[2] === '0'));
+});
+
+test('unmanaged phone identity prevents mount or execution', async t => {
+  const { manager, calls } = await fixture(t);
+  const r = await manager.create(request);
+  const previous = manager.runner;
+  manager.runner = async (exe, args, ...rest) => exe === '/usr/bin/bash' ? { code: 1, stdout: '', stderr: 'Foreign identity' } : previous(exe, args, ...rest);
+  await assert.rejects(manager.start(r.id), /Foreign identity/);
+  assert.ok(!calls.some(c => c.exe.endsWith('/mount') || c.exe.endsWith('/systemd-run')));
+});
+
+
+test('runtime prerequisite rejects stale source and unsafe result permissions', async t => {
+  const { manager, dir } = await fixture(t);
+  const filename = path.join(dir, '.runtime-check.json');
+  manager.runtimeFingerprint = async () => 'expected';
+  await fs.writeFile(filename, JSON.stringify({schema:1,fingerprint:'old'}), {mode:0o600});
+  await assert.rejects(manager.verifyRuntimeCheck(), /self-check required/);
+  await fs.writeFile(filename, JSON.stringify({schema:1,fingerprint:'expected'}));
+  await manager.verifyRuntimeCheck();
+  await fs.chmod(filename, 0o644);
+  await assert.rejects(manager.verifyRuntimeCheck(), /Unsafe runtime/);
+});
+
+test('self-check entry preserves identical service isolation properties', async t => {
+  const { manager } = await fixture(t);
+  const r = {id:'a'.repeat(16),adbPort:15000,hostMemoryMiB:128};
+  const normal=manager.serviceArgs(r), check=manager.serviceArgs(r,{selfCheck:true});
+  assert.deepEqual(check.map(x=>x==='--self-check'?'--supervise':x),normal);
+});
+
+
+test('missing kernel group OOM policy is rejected', async t => {
+  const { manager, io } = await fixture(t);
+  const r = await manager.create(request); await manager.start(r.id);
+  manager.io = new Proxy(io,{get(target,key){if(key==='readFile')return async(p,...rest)=>p.endsWith('/memory.oom.group')?'0':target.readFile(p,...rest);return target[key];}});
+  await assert.rejects(manager.verifyLimits(await manager.read(r.id)), /memory.oom.group/);
+});
+
+
+test('detach waits for kernel asynchronous loop autoclear without deleting attached storage', async t => {
+  const { manager } = await fixture(t);
+  const r = await manager.create(request); await manager.start(r.id);
+  const record = await manager.read(r.id);
+  const previous = manager.loopInfo.bind(manager); let pending = 0, detached = false;
+  const runner = manager.runner;
+  manager.runner = async (exe,args,...rest) => {const result=await runner(exe,args,...rest);if(args.includes('--detach'))detached=true;return result;};
+  manager.loopInfo = async r => detached && pending++ < 2 ? record.loop : previous(r);
+  assert.equal((await manager.stop(r.id)).status,'stopped');
+  assert.ok(pending>=3);
+});
+
+
+test('disappearing residents require bounded complete observation retry', async t => {
+  const { manager } = await fixture(t);
+  let calls=0;
+  manager.observeLimits = async () => { if(++calls<3) throw Object.assign(new Error('resident vanished'),{code:'ENOENT'}); };
+  await manager.verifyLimits({}); assert.equal(calls,3);
+  calls=0;manager.observeLimits=async()=>{calls++;throw Object.assign(new Error('persistent missing'),{code:'ENOENT'});};
+  await assert.rejects(manager.verifyLimits({}), /persistent/); assert.equal(calls,3);
+  calls=0;manager.observeLimits=async()=>{calls++;throw new Error('foreign UID');};
+  await assert.rejects(manager.verifyLimits({}), /foreign/);assert.equal(calls,1);
+});
+
+
+test('public networking allows only its required TUN device without granting phone capabilities', async t => {
+  const {manager}=await fixture(t,{networkMode:'public'});
+  const args=manager.serviceArgs({id:'a'.repeat(16),adbPort:15000,hostMemoryMiB:4096});
+  assert.ok(args.includes('DeviceAllow=/dev/net/tun rw'));
+  assert.ok(args.includes('CapabilityBoundingSet='));
+  assert.ok(args.includes('PrivateNetwork=yes'));
+  assert.equal(JSON.parse(args.at(-2)).publicNetwork,true);
+  manager.networkMode='none';
+  assert.ok(!manager.serviceArgs({id:'a'.repeat(16),adbPort:15000,hostMemoryMiB:4096}).includes('DeviceAllow=/dev/net/tun rw'));
+});
+
+test('network intent is durable before helper launch and failed readiness cleans only after stop', async t => {
+  const {manager,calls}=await fixture(t,{networkMode:'public'});
+  const r=await manager.create(request);
+  manager.startNetwork=async record=>{assert.equal((await manager.read(record.id)).networkAttempted,true);throw new Error('before table readiness');};
+  let cleaned=false;
+  manager.stopNetwork=async record=>{await manager.assertStopped(record);assert.ok(calls.some(c=>c.args[0]==='stop'));cleaned=true;};
+  await assert.rejects(manager.start(r.id),/before table readiness/);
+  assert.equal(cleaned,true);assert.equal((await manager.read(r.id)).networkAttempted,undefined);
 });

@@ -66,7 +66,7 @@ def sdk(root):
 def config():
     root = Path('/etc/cloudphone-platform')
     value = json.loads(private_file(root / 'config.json'))
-    if value.get('schemaVersion') != 1 or value.get('mode') not in ('dashboard', 'standalone') or value.get('stateDir') != '/var/lib/cloudphone-platform' or value.get('sdkDir') != '/opt/cloudphone-sdk/api36-v1' or value.get('credentialsFile') != '/var/lib/cloudphone-platform/credentials.json' or value.get('host') != '127.0.0.1' or not isinstance(value.get('port'), int) or not 1024 <= value['port'] <= 65535 or value['port'] == 8787:
+    if value.get('networkMode') not in ('public', 'none') or value.get('schemaVersion') != 1 or value.get('mode') not in ('dashboard', 'standalone') or value.get('stateDir') != '/var/lib/cloudphone-platform' or value.get('sdkDir') != '/opt/cloudphone-sdk/api36-v1' or value.get('credentialsFile') != '/var/lib/cloudphone-platform/credentials.json' or value.get('host') != '127.0.0.1' or not isinstance(value.get('port'), int) or not 1024 <= value['port'] <= 65535 or value['port'] == 8787:
         raise ValueError('Unsafe root configuration')
     web_path = Path('/etc/cloudphone-platform-web/config.json')
     st = web_path.lstat()

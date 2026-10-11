@@ -9,7 +9,7 @@ import { createBroker, validateBrokerRequest, readRootJSON } from '../lib/broker
 import { BrokerClient, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES } from '../lib/broker-client.mjs';
 
 const id = '0123456789abcdef';
-const input = { name: 'Phone', guestRamMiB: 1024, hostMemoryMiB: 2048, diskGiB: 8 };
+const input = { name: 'Phone', guestRamMiB: 2560, hostMemoryMiB: 3584, diskGiB: 8 };
 const capabilities = () => ({ supported: true, checks: { networkIsolation: { ok: true }, streamingIsolation: { ok: true } } });
 function mock() {
   const calls = [];
@@ -62,7 +62,7 @@ test('rejects unknown operations, paths, config injection and invalid resource b
     { op: 'metrics', args: [id.toUpperCase()] }, { op: 'delete', args: [123] },
     { op: 'create', args: [{ ...input, stateDir: '/tmp' }] },
     { op: 'create', args: [{ ...input, config: { mode: 'standalone' } }] },
-    ...[{ guestRamMiB: 1023 }, { guestRamMiB: 65537 }, { hostMemoryMiB: 2047 },
+    ...[{ guestRamMiB: 2559 }, { guestRamMiB: 65537 }, { hostMemoryMiB: 3583 },
       { hostMemoryMiB: 131073 }, { diskGiB: 7 }, { diskGiB: 1025 }, { diskGiB: 8.5 },
       { name: 'Phone\ncommand' }].map(change => ({ op: 'create', args: [{ ...input, ...change }] })),
     { op: 'verifyKey', args: [id, 'x'.repeat(257)] }, { op: 'verifyCredentials', args: ['admin', 'x'.repeat(1025)] },
@@ -498,4 +498,52 @@ test('timed-out backend upgrade check retains bounded admission slot and never o
   release();
   await delay(20);
   assert.equal(f.workerWS, undefined);
+});
+
+test('gaming encoded scale and bounded audio pass through real Unix broker transport', async t => {
+  const f = await streamFixture(t);
+  const { ws, messages } = await streamConnect(t, f.streamPath, `/stream?id=${id}&quality=gaming&scale=0.5`);
+  await eventually(() => f.controls.length === 1);
+  assert.deepEqual(f.controls[0], { type: 'start', quality: 'gaming', scale: 0.5 });
+  f.workerWS.send(JSON.stringify({ type: 'audio', supported: true, codec: 'opus', sampleRate: 48000, channels: 2 }));
+  const audio = Buffer.from([3, 0, 0, 0, 0, 0, 1, 0, 0, 0xF8, 0xFF, 0xFE]);
+  f.workerWS.send(audio);
+  await eventually(() => messages.some(m => m.type === 'audio') && messages.some(m => Buffer.isBuffer(m) && m[0] === 3));
+  assert.deepEqual(messages.find(m => Buffer.isBuffer(m) && m[0] === 3), audio);
+  ws.terminate();
+});
+
+test('encoded scale rejects unsafe, ambiguous or unbounded query values', async t => {
+  const f = await streamFixture(t);
+  for (const value of ['0', '-1', '2', 'NaN', '0.50', '', '1&scale=0.5']) {
+    await rejectStream(f.streamPath, `/stream?id=${id}&quality=gaming&scale=${value}`, 400);
+  }
+  assert.deepEqual(f.resolved, []);
+});
+
+test('media schema restricts audio formats and encoded geometry independently', async () => {
+  const { streamScale, audioMetadata, validMediaPacket } = await import('../lib/media-protocol.mjs');
+  assert.equal(streamScale(undefined), 1);
+  for (const value of [0.5, 0.75, 1]) assert.equal(streamScale(String(value)), value);
+  for (const value of [false, [], {}, 0, Infinity, '1e0', '01']) assert.throws(() => streamScale(value));
+  const format = { type: 'audio', supported: true, codec: 'pcm', sampleRate: 48000, channels: 2 };
+  assert.deepEqual(audioMetadata({ ...format, secret: 'discard' }), format);
+  for (const bad of [{ codec: 'aac' }, { sampleRate: 999999 }, { channels: 100 }, { supported: 'true' }]) assert.throws(() => audioMetadata({ ...format, ...bad }));
+  assert.deepEqual(audioMetadata({ supported: false, reason: '/private/path' }), { type: 'audio', supported: false, reason: 'unavailable' });
+  for (const data of [Buffer.alloc(8), Buffer.alloc(1024*1024+1), Buffer.from([5,0,0,0,0,0,0,0,0])]) assert.equal(validMediaPacket(data), false);
+});
+
+test('Unix proxy authenticates the actual descriptor supplied to websocket', async t => {
+  const { socketCredentials } = await import('../lib/stream-peer.mjs');
+  let observed;
+  const f = await streamFixture(t, { proxy: { verifyPeer: async (id, socket) => { observed = await socketCredentials(socket); } } });
+  const { messages } = await streamConnect(t, f.streamPath);
+  await eventually(() => messages.some(Buffer.isBuffer));
+  assert.equal(observed.pid, process.pid); assert.equal(observed.uid, process.getuid());
+});
+
+test('failed connected peer authentication prevents websocket upgrade and start', async t => {
+  const f = await streamFixture(t, { proxy: { verifyPeer: async () => { throw new Error('wrong peer'); } } });
+  await rejectStream(f.streamPath, `/stream?id=${id}&quality=balanced`, 503);
+  assert.deepEqual(f.controls, []);
 });

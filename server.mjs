@@ -12,6 +12,7 @@ import { AdbScrcpyClient, AdbScrcpyOptions3_3_1 } from '@yume-chan/adb-scrcpy';
 
 import { createAuth, originAllowed } from './lib/auth.mjs';
 import { validateRequest } from './lib/resources.mjs';
+import { streamScale, streamAudio } from './lib/media-protocol.mjs';
 export { originAllowed };
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const int = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
@@ -44,6 +45,7 @@ export function encodePacket(packet) {
 }
 
 export const QUALITY = Object.freeze({
+  gaming: Object.freeze({ videoBitRate: 2500000, maxSize: 960, maxFps: 60 }),
   economy: Object.freeze({ videoBitRate: 1500000, maxSize: 720, maxFps: 24 }),
   balanced: Object.freeze({ videoBitRate: 4000000, maxSize: 1140, maxFps: 30 }),
   sharp: Object.freeze({ videoBitRate: 6000000, maxSize: 1600, maxFps: 30 }),
@@ -268,7 +270,7 @@ export async function createApplication({ credentials, manager, mode = 'dashboar
           authorizePhone(session, url.searchParams.get('id'));
           const phone = await findPhone(url.searchParams.get('id'));
           return json(res, 200, { ok: true, id: phone.id, status: phone.status, serial: phone.serial,
-            streaming: !!slots.get(phone.id)?.active?.ready, android: 'Android 16 (API 36), Google image', audio: false });
+            streaming: !!slots.get(phone.id)?.active?.ready, android: 'Android 16 (API 36), Google image', audio: slots.get(phone.id)?.active?.audio ?? { supported: false, reason: 'unavailable' } });
         }
         if (url.pathname === '/api/phones' && req.method === 'POST') {
           if (mode === 'standalone') fail(403, 'Standalone provisioning is installer-only');
@@ -333,7 +335,9 @@ export async function createApplication({ credentials, manager, mode = 'dashboar
       if (!auth.allowed(req)) fail(403, 'Origin rejected');
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname !== '/stream' || shuttingDown) fail(404, 'Not found');
-      onlyQuery(url, ['id', 'quality']);
+      onlyQuery(url, ['id', 'quality', 'scale', 'audio']);
+      let scale, audio;
+      try { scale = streamScale(url.searchParams.get('scale')); audio = streamAudio(url.searchParams.get('audio')); } catch { fail(400, 'Invalid stream settings'); }
       const quality = url.searchParams.get('quality') ?? 'balanced';
       if (!Object.hasOwn(QUALITY, quality)) fail(400, 'Invalid quality');
       authorizePhone(session, url.searchParams.get('id'));
@@ -341,12 +345,12 @@ export async function createApplication({ credentials, manager, mode = 'dashboar
       if (phone.status !== 'running') fail(409, 'Phone is not running');
       validatePhoneIdentity(phone);
       if (!auth.session(req) || socket.destroyed || shuttingDown) fail(401, 'Session expired');
-      wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, session, phone, quality));
+      wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, session, phone, quality, scale, audio));
     } catch (error) { if (!socket.destroyed) reject(error.status ?? 503); }
     finally { pendingUpgrades--; clearTimeout(timer); }
   });
-  wss.on('connection', (ws, session, phone, quality) => {
-    const state = { ws, phone, quality, scrcpyServer, sessionId: session.id, stopped: false, ready: false,
+  wss.on('connection', (ws, session, phone, quality, scale, audio) => {
+    const state = { ws, phone, quality, scale, audioMode: audio, scrcpyServer, sessionId: session.id, stopped: false, ready: false,
       alive: true, pointers: new Set(), tokens: 360, refill: Date.now(), pending: 0, controls: Promise.resolve() };
     const slot = slotFor(phone.id);
     const send = value => { if (!state.stopped && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value)); };
@@ -361,7 +365,7 @@ export async function createApplication({ credentials, manager, mode = 'dashboar
       if (!auth.sessions.has(state.sessionId)) return ws.close(4001, 'Session expired');
       const now = Date.now();
       state.tokens = Math.min(360, state.tokens + (now - state.refill) * 0.24); state.refill = now;
-      if (--state.tokens < 0 || state.pending > 360) return ws.close(1008, 'Control rate exceeded');
+      if (--state.tokens < 0 || state.pending >= 32) return ws.close(1008, 'Control rate exceeded');
       let m; try { m = binary ? null : JSON.parse(data.toString()); } catch {}
       if (!validateControl(m)) return ws.close(1008, 'Invalid control');
       if (!state.ready || state.stopped) return;
@@ -371,9 +375,11 @@ export async function createApplication({ credentials, manager, mode = 'dashboar
         else if (!state.pointers.has(m.id)) return;
         if (m.action === 1 || m.action === 3) state.pointers.delete(m.id);
       }
+      const queuedAt = performance.now();
       state.pending++;
       state.controls = state.controls.then(async () => {
-        if (state.stopped) return;
+        if (state.stopped || ws.readyState !== WebSocket.OPEN) return;
+        if (performance.now() - queuedAt > 150) { ws.close(1013, 'Stale control queue; reconnect'); return; }
         const c = state.client.controller;
         if (m.type === 'key') await c.injectKeyCode({action: m.action, keyCode: m.keyCode, repeat: m.repeat ?? 0, metaState: m.metaState ?? 0});
         // Clipboard paste preserves Unicode and works with Android's active IME.

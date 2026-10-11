@@ -1,5 +1,19 @@
 # Verification status and acceptance gates
 
+## Current unpublished integration evidence
+
+The sections below originally described the published release candidate. Current work has now exercised a disposable Ubuntu 24.04.5/systemd255 VM using nested KVM; the original active phone was not restarted or used for stress tests. Exact external evidence is under `cloudphone-platform-evidence/runtime/`.
+
+- Real 64 MiB cgroup OOM: `memory.swap.max=0`, `memory.oom.group=1`, `oom_kill=2`, `oom_group_kill=1`; peer survival. Real 128 MiB fully allocated ext4 block and inode exhaustion (32747 files), writable-path device identity, missing-bind failure, and cleanup: `kernel-final.log`.
+- Found and fixed real launch defects: unsupported `MemoryOOMGroup`, missing passwd identities, `/run` namespace masking, ADB37 listening-host syntax, API36 empty-data archive layout, and asynchronous loop detach. Production-property worker and supervisor/connected-peer checks were exercised, not merely mocked.
+- Explicit `runtimeSelfCheck()` uses a separate bounded volume and real supervisor/worker, with boot/source/kernel/systemd fingerprint; capabilities only accept a private result produced after successful checks and cleanup. The self-check does **not** claim Android boot completion or physical disk provisioning.
+- Public network helper: actual HTTPS301 and DNS, reachable host-public-address negative control with kernel drop counter, private/metadata denial, exact cgroup helpers, seccomp socket restrictions, monitor-death and firewall-tamper failure behavior. `network-actual.log`, `network-policy-failure.log`. Restricted to public IPv4 TCP80/443 and approved UDP DNS; not unrestricted gaming UDP/QUIC.
+- Integrated public-network supervisor/worker self-check passed: `online-selfcheck3.log`. Final broker-context verification also passed with production capability bounding and umask0077: `broker-context-final.log`.
+- Checksum-staged Ubuntu dashboard installation completed: `staged-install3.log`, source archive `d8cc4da1812fea2464a0aff28bda138d176b3c29db8d0e9e2e71757af2222320`. Rerun preserved credentials and services (`installed-rerun.log`). This snapshot predates final online integration; public GitHub source has not been updated.
+- Browser audio/settings: actual production audio pipeline through worker -> Unix broker -> HTTP/WSS -> Chromium decoded nonzero Opus and PCM samples, with mute/reconnect/teardown and responsive modal settings. Sources are explicitly **synthetic ffmpeg sine/video**, not Android capture. `media/results.json`, `media-browser.log`, `media/settings-*.png`.
+
+Remaining Android boot/audio, genuine admitted create/start, final revised installation and cleanup results must be read from the final integration report; do not infer them from the successful prerequisite or synthetic tests. The VM backing is qcow2/thin; it does not certify thick physical storage. No physical handset/gaming or zero-lag claim.
+
 ## Locally exercised
 
 - `npm ci --ignore-scripts` using pinned lockfile: successful; no Android/SDK downloads or system packages installed during development.
@@ -13,12 +27,12 @@
 
 Evidence lives outside the source repository at `/a0/usr/workdir/cloudphone-platform-evidence/` in the development environment (not a portable runtime requirement). `unit-tests.txt`, `render-smoke.txt`, `render-run.log`, screenshots and `capabilities.json` identify their mocked/real scope. The browser script accepts `PLAYWRIGHT_MODULE`, `CHROMIUM_PATH` and `EVIDENCE_DIR` for another host; install Playwright/Chromium and ffmpeg separately for that optional manual test.
 
-## Intentional release blockers
+## Remaining acceptance gaps
 
-1. **Internet egress is not implemented.** Phones use a private network namespace. Separate host-loopback ADB ports are not accepted as a tenant boundary. Only explicitly selected offline mode has a network implementation; default online provisioning fails closed. Do not disable private networking as a workaround.
-2. **Installed stream/resource boundary has not been validated.** The Unix proxy and confined worker are implemented and protocol-tested, but runtime ancestry/socket identity, actual systemd namespace layout and process membership need a disposable Ubuntu host. `streamingIsolation` remains false; create/start remain disabled rather than advertise a production guarantee. This gate has no supported bypass flag.
-3. **Clean Ubuntu one-command deployment is not run.** Shell/parser/unit checks do not prove download availability, service permissions, runtime library coverage, boot success or HTTPS tunnel readiness. Bootstrap/source URLs depend on the owner publishing this revision.
-4. **No new real phone was booted.** Android 16 transport history belongs to the inherited live implementation; it is not proof of the new isolated deployment. The original user's phone was deliberately left untouched.
+1. Genuine production create/start **passed** at6272MiB disposable VM memory with2560MiB Android guest,3584MiB aggregate budget and8GiB disk; unchanged2GiB host reserve. Isolated ADB returned Android16/API36. However, sys.boot_completed was never1: nested AMD WRMSR initially stalled the kernel; an explicitly documented guest-only ignore_msrs diagnostic allowed userspace progress, then Android framework watchdog killed system_server while blocked in RoleService default-role initialization. No cgroup OOM kill occurred. Actual Android audio/video/browser acceptance remains unverified. See runtime/genuine-attempt1.log, android-watchdog.log and continuation-stop.log.
+2. Final security-fixed source was checksum-staged at the actual installed /opt/cloudphone-platform path, built and passed real service startup/selfcheck, broker capabilities and HTTP200. Archive SHA256:13ce95e0ee513cda5f69a3252f1540518da19aa16a8edb9c6bb11db047deb2de. This was a stopped-source update, not a fresh installer rerun. Fresh standalone sizing refused in the bounded guest; no reserve/sizing rule was lowered. Independent-review H1 archive mutation and H2 readiness-read races were fixed with deterministic/real-file regressions; final173 tests passed.
+3. Two-phone adversarial socket substitution/control isolation, abrupt reboot recovery, full physical-handset/gaming and real Android A/V synchronization remain unverified.
+4. Test phone processes, loop attachments and firewall tables were cleaned. The disposable VM was shut down after the final retry; its historical tunnel URL is no longer a running deployment. The user's original phone was untouched.
 
 ## Required clean-host acceptance matrix before enabling deployment
 
@@ -29,7 +43,7 @@ Use a disposable supported Ubuntu x86_64 KVM VM with known thick-backed storage.
 - Verify actual namespace mounts from each phone process: fixed image device and filesystem identity, read-only SDK/system, writable HOME/log/temp/shm entirely inside the assigned image. Missing/wrong mount must stop launch; no underlying-directory fallthrough.
 - Read `memory.max`, `memory.swap.max`, `memory.current`, cgroup membership and OOM events for emulator, ADB, supervisor and stream worker. Induce controlled allocation beyond the limit; verify kernel enforcement and peer/host survival. Shared frontend/broker/tunnel buffers remain explicitly shared overhead.
 - Fill guest userdata, host-side temp/log paths, filesystem blocks and inodes. Confirm ENOSPC inside the phone budget, no mutable data escape, host reserve preserved and cleanup still works. Test another workload consuming host free resources during admission.
-- Deny cross-phone ADB/console/gRPC, host loopback/LAN/metadata endpoints and raw browser ADB access. Future egress helper must be charged to the phone cgroup, block host/private destinations and fail closed on helper death.
+- Deny cross-phone ADB/console/gRPC, host loopback/LAN/metadata endpoints and raw browser ADB access. The egress helper must remain charged to the phone cgroup, block host/private destinations and fail closed on helper death.
 - Verify worker socket ancestry/ownership cannot be substituted to another phone or broker target by a compromised phone UID. Verify unprivileged web cannot read phone keys/state directly or select arbitrary broker commands/paths/unit properties.
 - Stop/delete while streaming; worker/ADB/QEMU crash, broker restart, abrupt host reboot, stale records/locks/sockets/loop devices and failed detach. Prove process quiescence before storage release; never delete foreign units or mounts.
 - Hosted HTTPS: exact canonical Origin, Secure/HttpOnly/SameSite cookies, CSRF rejection, session expiry/logout/takeover, rate/queue limits, scoped phone-key access, tunnel hostname rotation and secure config refresh.

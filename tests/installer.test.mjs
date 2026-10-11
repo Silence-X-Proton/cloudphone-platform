@@ -265,3 +265,77 @@ test('bootstrap fetches full public source; dependency installation verifies off
   assert.ok(deps.indexOf('sha256sum --check --status') < deps.indexOf('tar --extract'));
   assert.match(deps, /REPAIR_NPM=yes/); assert.doesNotMatch(deps, /ln -s[fF]|apt-get upgrade/);
 });
+
+test('reviewed source snapshot rejects checksum mismatch, traversal and symlinks before writes', async () => temporary(async dir => {
+  ok(python(`import importlib.util, tarfile, io, hashlib
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('staged', ${JSON.stringify(path.join(scripts, 'staged-source.py'))}); m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+r=Path(sys.argv[1]);required=['server.mjs','package.json','package-lock.json','scripts/install.sh']
+for i,bad in enumerate([None,'../escape','/absolute','link','.git/config','node_modules/x']):
+    archive=r/(str(i)+'.tgz'); dest=r/('out'+str(i));dest.mkdir()
+    with tarfile.open(archive,'w:gz') as t:
+        for name in required+([bad] if bad else []):
+            info=tarfile.TarInfo(name);info.size=2;info.mode=0o755
+            if name=='link':info.type=tarfile.SYMTYPE;info.linkname='/etc/passwd'
+            t.addfile(info,io.BytesIO(b'ok'))
+    digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+    try:m.extract(archive,'0'*64,dest)
+    except ValueError:pass
+    else:raise AssertionError('checksum mismatch accepted')
+    assert not list(dest.iterdir())
+    if bad:
+        try:m.extract(archive,digest,dest)
+        except ValueError:pass
+        else:raise AssertionError('unsafe snapshot accepted')
+        assert not list(dest.iterdir())
+    else:
+        m.extract(archive,digest,dest)
+        assert (dest/'server.mjs').read_bytes()==b'ok'
+        assert (dest/'scripts/install.sh').stat().st_mode & 0o777 == 0o755
+`, [dir]));
+}));
+
+test('installed startup validates identities and runs boot/source-bound runtime prerequisite', async () => {
+  const install = await fs.readFile(path.join(scripts, 'install.sh'), 'utf8');
+  const start = await fs.readFile(path.join(scripts, 'start.sh'), 'utf8');
+  const check = await fs.readFile(path.join(scripts, 'run-service.sh'), 'utf8');
+  const local = await fs.readFile(path.join(scripts, 'bootstrap-local.sh'), 'utf8');
+  assert.match(install, /phone-identities.sh" --install/);
+  assert.match(install, /sourceArchiveSha256/);
+  assert.match(install, /staged-source.py/);
+  assert.match(start, /runtime-check.mjs/);
+  assert.match(check, /phone-identities.sh" --verify/);
+  assert.match(check, /runtime-check.mjs/);
+  assert.ok(local.indexOf('staged-source.py') < local.indexOf('bash "$WORK/source/scripts/dependencies.sh"'));
+  assert.match(local, /--source-archive "\$ARCHIVE" --source-sha256 "\$SHA"/);
+});
+
+test('pinned API36 rejects guest RAM values the actual emulator silently increases', async () => {
+  const { validateRequest } = await import('../lib/resources.mjs');
+  for (const guestRamMiB of [1024, 2048, 2559]) assert.throws(() => validateRequest({name:'Phone',guestRamMiB,hostMemoryMiB:4096,diskGiB:8}), /2560/);
+  assert.equal(validateRequest({name:'Phone',guestRamMiB:2560,hostMemoryMiB:3584,diskGiB:8}).guestRamMiB,2560);
+  assert.throws(() => validateRequest({name:'Phone',guestRamMiB:2560,hostMemoryMiB:3583,diskGiB:8}), /overhead/);
+});
+
+test('archive extraction remains bound to approved bytes after original inode mutation', async () => temporary(async dir => {
+  ok(python(`import importlib.util,tarfile,io,hashlib
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('staged', ${JSON.stringify(path.join(scripts, 'staged-source.py'))});m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+r=Path(sys.argv[1]);a=r/'source.tgz';b=r/'evil.tgz';d=r/'out';d.mkdir()
+for archive,content in [(a,b'approved'),(b,b'attacker')]:
+ with tarfile.open(archive,'w:gz') as t:
+  for name in ['server.mjs','package.json','package-lock.json','scripts/install.sh']:
+   info=tarfile.TarInfo(name);info.size=len(content);t.addfile(info,io.BytesIO(content))
+digest=hashlib.sha256(a.read_bytes()).hexdigest();original_open=m.tarfile.open
+mutated=False
+def swap_then_parse(*args,**kwargs):
+ global mutated
+ if not mutated:
+  a.write_bytes(b.read_bytes());mutated=True
+ return original_open(*args,**kwargs)
+m.tarfile.open=swap_then_parse
+m.extract(a,digest,d)
+assert mutated
+assert (d/'server.mjs').read_bytes()==b'approved', 'unapproved archive bytes executed'
+`, [dir]));
+}));

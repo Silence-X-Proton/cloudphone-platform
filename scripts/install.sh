@@ -7,6 +7,7 @@ usage() {
   cat <<'HELP'
 Usage: sudo scripts/install.sh [--mode dashboard|standalone] [--port 8790]
   [--source /path/to/clean/checkout | --repo-url https://HOST/OWNER/REPO.git --ref FULL_COMMIT_SHA]
+  [--source-archive /path/reviewed.tgz --source-sha256 SHA256]
   [--accept-android-sdk-license]
 Prompts for mode and explicit Android SDK license consent when omitted.
 Requires already-provisioned Ubuntu 22.04/24.04 x86_64, Node 22/24, KVM, loop and systemd.
@@ -14,18 +15,19 @@ Use bootstrap.sh for explicit-consent apt/Node setup. This installer starts the 
 Only install trusted source; root executes your application build scripts.
 HELP
 }
-MODE='' PORT=8790 SOURCE=$(dirname "$BASE") REPO='' REF='' ACCEPT=no
+MODE='' PORT=8790 SOURCE=$(dirname "$BASE") REPO='' REF='' ACCEPT=no ARCHIVE='' ARCHIVE_SHA=''
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --mode|--port|--source|--repo-url|--ref)
+    --mode|--port|--source|--repo-url|--ref|--source-archive|--source-sha256)
       (($# >= 2)) || fail "Missing value: $1"
-      case "$1" in --mode) MODE=$2;; --port) PORT=$2;; --source) SOURCE=$2;; --repo-url) REPO=$2;; --ref) REF=$2;; esac
+      case "$1" in --mode) MODE=$2;; --port) PORT=$2;; --source) SOURCE=$2;; --repo-url) REPO=$2;; --ref) REF=$2;; --source-archive) ARCHIVE=$2;; --source-sha256) ARCHIVE_SHA=$2;; esac
       shift 2 ;;
     --accept-android-sdk-license) ACCEPT=yes; shift ;;
     *) fail "Unknown argument: $1" ;;
   esac
 done
+[[ -z $ARCHIVE && -z $ARCHIVE_SHA || -n $ARCHIVE && $ARCHIVE_SHA =~ ^[a-f0-9]{64}$ && -z $REPO && -z $REF ]] || fail 'Staged source requires archive + SHA256, without repo/ref.'
 require_root
 check_paths
 lock_ops
@@ -41,6 +43,7 @@ if [[ -e $APP ]]; then
   node "$BASE/config.mjs" "$MODE" "$PORT" | cmp -s - "$CONFIG/config.json" || fail 'Existing config differs; refusing automatic migration/overwrite.'
   [[ -f "$STATE/credentials.json" && -f "$SDK/SHA256SUMS" ]] || fail 'Incomplete installation; manual recovery required.'
   for unit in "$UNIT" "$BROKER_UNIT" "$TUNNEL_UNIT" "$ORIGIN_UNIT"; do cmp -s "$APP/deploy/$unit" "$UNIT_DIR/$unit" || fail "Existing unit differs: $unit"; done
+  "$APP/scripts/phone-identities.sh" --verify
   verify_sdk
   verify_config
   verify_units
@@ -71,7 +74,11 @@ umask 077
 STAGE=$(mktemp -d /opt/.cloudphone-install.XXXXXX)
 trap 'rm -rf -- "$STAGE"' EXIT
 mkdir "$STAGE/app" "$STAGE/sdk"
-if [[ -n $REPO ]]; then
+if [[ -n $ARCHIVE ]]; then
+  ARCHIVE=$(readlink -f "$ARCHIVE")
+  python3 "$BASE/staged-source.py" "$ARCHIVE" "$ARCHIVE_SHA" "$STAGE/app" >/dev/null
+  COMMIT=''
+elif [[ -n $REPO ]]; then
   [[ $REPO =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+(\.git)?$ && ! $REPO == *..* ]] || fail 'Use an HTTPS repository URL without credentials/query/fragment.'
   [[ $REF =~ ^[a-fA-F0-9]{40}$ ]] || fail '--repo-url requires --ref full reviewed 40-character commit SHA.'
   GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null clone --no-checkout -- "$REPO" "$STAGE/repo"
@@ -82,11 +89,13 @@ else
   [[ $(git -c safe.directory="$SOURCE" -C "$SOURCE" rev-parse --show-toplevel) == "$SOURCE" ]] || fail 'Source must be repository root.'
   [[ -z $(git -c safe.directory="$SOURCE" -C "$SOURCE" status --porcelain --untracked-files=normal) ]] || fail 'Source checkout has edits/untracked files; commit/review them first (installer never edits source).'
 fi
+if [[ -z $ARCHIVE ]]; then
 COMMIT=$(git -c safe.directory="$SOURCE" -C "$SOURCE" rev-parse --verify "${REF:-HEAD}^{commit}")
 # Reject source symlinks/submodules before archive extraction and any application execution.
 [[ -z $(git -c safe.directory="$SOURCE" -C "$SOURCE" ls-tree -r "$COMMIT" | awk '$1 == "120000" || $1 == "160000"') ]] || fail 'Source symlinks/submodules are unsupported.'
 git -c safe.directory="$SOURCE" -C "$SOURCE" archive "$COMMIT" | tar -x --no-same-owner -C "$STAGE/app"
-for required in server.mjs lib/isolation.mjs lib/broker.mjs lib/broker-client.mjs scripts/credentials.mjs scripts/provision.mjs scripts/cleanup.mjs scripts/run-service.sh package.json package-lock.json deploy/cloudphone-platform.service deploy/cloudphone-platform-broker.service deploy/cloudphone-platform-tunnel.service deploy/cloudphone-platform-origin.service; do
+fi
+for required in server.mjs lib/isolation.mjs lib/broker.mjs lib/broker-client.mjs scripts/credentials.mjs scripts/provision.mjs scripts/cleanup.mjs scripts/run-service.sh scripts/phone-identities.sh scripts/socket-peer.py lib/stream-peer.mjs lib/media-protocol.mjs package.json package-lock.json deploy/cloudphone-platform.service deploy/cloudphone-platform-broker.service deploy/cloudphone-platform-tunnel.service deploy/cloudphone-platform-origin.service; do
   [[ -f "$STAGE/app/$required" ]] || fail "Application interface incomplete: $required"
 done
 node "$BASE/config.mjs" lock "$STAGE/app/package.json" "$STAGE/app/package-lock.json"
@@ -112,6 +121,7 @@ else
   mkdir -m 0755 /srv/cloudphone
 fi
 "$BASE/web-user.sh"
+"$STAGE/app/scripts/phone-identities.sh" --install
 mkdir -m 0700 "$STATE" "$CONFIG"
 mkdir -m 0755 "$WEB_CONFIG"
 printf '%s:%s\n' "$(id -u cloudphone-web)" "$(id -g cloudphone-web)" > "$CONFIG/.web-identity"
@@ -120,7 +130,7 @@ printf 'PORT=%s\n' "$PORT" > "$WEB_CONFIG/tunnel.env"
 chmod 0644 "$WEB_CONFIG/tunnel.env"
 node "$BASE/web-config.mjs" >/dev/null
 printf 'ANDROID_SDK_LICENSE_ACCEPTED=yes\naccepted_at=%s\n' "$(date -u +%FT%TZ)" > "$CONFIG/license-acceptance"
-printf '{"schemaVersion":2,"commit":"%s","mode":"%s","port":%s}\n' "$COMMIT" "$MODE" "$PORT" > "$STAGE/app/.cloudphone-install.json"
+printf '{"schemaVersion":2,"commit":"%s","sourceArchiveSha256":"%s","mode":"%s","port":%s}\n' "$COMMIT" "$ARCHIVE_SHA" "$MODE" "$PORT" > "$STAGE/app/.cloudphone-install.json"
 STATE_DIR="$STATE" node "$STAGE/app/scripts/credentials.mjs" init
 mv -T "$STAGE/app" "$APP"
 for unit in "$UNIT" "$BROKER_UNIT" "$TUNNEL_UNIT" "$ORIGIN_UNIT"; do install -m 0644 "$APP/deploy/$unit" "$UNIT_DIR/$unit"; done

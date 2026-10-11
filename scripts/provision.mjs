@@ -12,7 +12,7 @@ export function chooseStandaloneSize(usage, name = 'My phone') {
   const overhead = Math.max(2048, Math.ceil(hostMemoryMiB * 0.25 / 256) * 256);
   const guestRamMiB = Math.min(32768, hostMemoryMiB - overhead);
   const diskGiB = Math.min(256, Math.floor(usage.diskAllocatableBytes / 1024 ** 3 * 0.8));
-  if (guestRamMiB < 1024 || diskGiB < 8) throw new Error('Insufficient resources after host and emulator overhead reserves');
+  if (guestRamMiB < 2560 || diskGiB < 8) throw new Error('Insufficient resources after host and emulator overhead reserves');
   return { name, guestRamMiB, hostMemoryMiB, diskGiB };
 }
 export async function provision(manager, config) {

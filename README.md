@@ -2,7 +2,13 @@
 
 A responsive Android 16 phone console with authenticated H.264/scrcpy control, a mobile-first dashboard, and a dashboard-free single-phone mode. No VNC. Based on the working Cloudphone transport, with a separate reusable deployment architecture.
 
-> **Release candidate — not a production-ready hosted phone service yet.** UI, authentication, broker and worker protocol tests run locally. Real Ubuntu installation, Android boot inside the new sandbox, cgroup OOM/disk exhaustion, reboot recovery and cross-phone isolation have **not** been verified. Online network egress is **not implemented**. Production create/start intentionally fails closed while required isolation integration/validation is incomplete. The installer must report this blocker rather than claim a working standalone phone. Do not remove gates or enable host networking to make the demo look functional.
+> **Integration candidate—not yet production-certified.** Real Ubuntu installation, kernel OOM/disk exhaustion, installed supervisor/worker boundaries and restricted Internet egress have now been exercised in a disposable nested-KVM VM. Create/start is guarded by a real boot/source-bound installed self-check, not an unconditional feature flag. Actual Android boot/audio, complete multi-phone attack testing and reboot recovery remain separately tracked in [VERIFICATION.md](VERIFICATION.md). Do not equate a working dashboard or synthetic browser media test with a completed phone deployment.
+
+## Session settings and reconnect stability
+
+Settings group instant playback/display controls separately from encoding changes. Fit, zoom, fullscreen, volume, mute and latency policy apply locally without restarting the stream. Quality, encoded scale and audio transport are staged until **Apply encoding**; one changed Apply performs one controlled stream restart. Unchanged values do nothing. Retry callbacks are generation-guarded and automatic overload recovery is bounded.
+
+The latest platform suite passed 183 tests. The separately deployed single-phone implementation passed 30 tests and a 91-second production-stream check with zero automatic reconnects; actual Android Opus/PCM audio decoded across Apply. These live-phone results do not establish boot completion for the new isolated platform. See [VERIFICATION.md](VERIFICATION.md) for its remaining acceptance gaps.
 
 ## One-command Ubuntu setup
 
@@ -33,14 +39,16 @@ The completed setup path prints generated admin username/password and a temporar
 - **Dashboard:** username/password login, host capacity and reserves, shared SDK overhead, per-phone charged RAM and filesystem usage, create/start/stop/delete, and explicit admin-only reveal/copy of each phone's unique access key.
 - **Standalone:** one phone only; `/` serves the phone viewer, dashboard assets and create/delete APIs are unavailable. It still has authenticated phone control, not an unauthenticated public emulator. Sizing is derived conservatively from available resources and host reserves—not literally every byte.
 - A phone key grants only that phone's control session. Submit it through the login form; never put secrets in URLs. Admin credentials use salted scrypt. Random phone keys are protected by root-owned 0700 state directories/0600 records; this is access control at rest, **not full-disk encryption**. Root and disk-backup operators remain trusted.
-- H.264 over authenticated WSS with native WebCodecs. Touch, keyboard, wheel, Android navigation and Unicode paste are retained. Audio is disabled. Current Chromium over HTTPS is the primary target; physical mobile devices/Safari are not certified.
-- Economy, balanced and sharp profiles trade quality for responsiveness. Queue limits trigger a fresh decoder/keyframe sequence rather than discard arbitrary delta frames; automatic retries/downshifts are bounded. Software GPU, host load, Android workload and network latency still matter. **No zero-lag or guaranteed FPS claim.**
+- H.264 over authenticated WSS with native WebCodecs. Touch, keyboard, wheel, Android navigation and Unicode paste are retained. Optional scrcpy Opus or PCM audio uses browser WebCodecs/Web Audio with explicit **Enable audio** gesture, mute and volume. Unsupported capture/decoder states are reported rather than silently claiming playback. Audio capture from the new Android deployment is a separate acceptance check from the verified synthetic Opus/PCM transport tests.
+- Session settings are available after login without a dashboard: an accessible responsive modal offers gaming/low-latency profile, encoded-resolution scale, viewer zoom/fit, fullscreen and reset. Only allowlisted nonsecret preferences persist in this browser. Encoded scaling changes the encoder cap; viewer zoom changes presentation only—neither increases Android guest resolution. Touch coordinates follow the actual encoded dimensions through zoom/scroll.
+- Economy, balanced, sharp and gaming profiles trade quality for responsiveness. Gaming requests up to 60 FPS, **not measured or guaranteed 60 FPS**. Browser video queue caps are six frames (three gaming); audio scheduling is bounded to 200 ms (120 ms gaming), with six queued Opus decodes and 16 scheduled sources. These are local queue limits, not end-to-end latency claims. Transport queues are capped at 1 MiB per hop; stale input terminates the session instead of replaying delayed gestures. Video pressure triggers a fresh decoder/keyframe sequence rather than arbitrary delta-frame dropping. Software GPU, host load, Android workload and network latency still matter. **No zero-lag or guaranteed FPS claim.**
+- Current Chromium over HTTPS is the primary target; physical mobile devices/Safari are not certified.
 
 ## Resource contract
 
 | Resource | Meaning |
 |---|---|
-| Guest RAM | Android emulator `-memory` setting, not the whole host footprint. |
+| Guest RAM | Android emulator `-memory` setting, not the whole host footprint. Minimum2560MiB: the pinned API36 emulator silently raises smaller requests. |
 | Host memory budget | Aggregate cgroup v2 `MemoryMax` for supervisor, QEMU/emulator, dedicated ADB and the in-phone scrcpy transport worker; `MemorySwapMax=0`. At least 1024 MiB additional budget above guest RAM is required, not guaranteed sufficient for every workload. Hitting the ceiling can terminate the phone. |
 | Shared host overhead | OS, dashboard, root broker, bounded proxy buffers, tunnel, SDK caches and storage metadata are outside individual phone ceilings and must fit the host reserve. Cgroup charging is not exact attribution of every physical host byte. |
 | Allocated disk | Fully allocated fixed-size ext4 image. Instance AVD, mutable home, logs, crash/temp/runtime files and `/dev/shm` live inside it. Metadata and reserved blocks reduce usable capacity. |
@@ -65,7 +73,7 @@ HTTPS Cloudflare Quick Tunnel
 
 Target: Ubuntu 22.04/24.04 x86_64, systemd as PID 1, writable cgroup v2 memory controller, KVM available to the service, loop/ext4 support, root installation, adequate thick-backed storage and Node 22/24. Nested containers/read-only cgroups and hosts without these capabilities are rejected. Do not rearrange host cgroups or weaken enforcement silently. Reserved numeric phone UID/GIDs and dedicated emulator/ADB ports are checked for conflicts. All public application listeners are loopback; raw ADB/console/gRPC are not tunnelled.
 
-The privileged broker has mount/systemd authority but no public HTTP listener; a compromised authorized web service can invoke its deliberately narrow administrative operations. Unix filesystem permissions are the broker authentication boundary. The root broker must share PID1's mount namespace so systemd phone units see verified mounted volumes. Each phone runs non-root with a read-only system/SDK, private networking, no capabilities and limited devices. **Private networking currently has no Internet egress implementation.** Merely assigning separate host-loopback ports was rejected as insufficient tenant isolation.
+The privileged broker has mount/systemd authority but no public HTTP listener; a compromised authorized web service can invoke its deliberately narrow administrative operations. Unix filesystem permissions are the broker authentication boundary. The root broker must share PID1's mount namespace so systemd phone units see verified mounted volumes. Each phone runs non-root with a read-only system/SDK, private networking, no capabilities and limited devices. Public mode uses a cgroup-charged slirp helper with per-phone nftables destination policy and verified helper identity. Only public IPv4 TCP80/443 and UDP DNS to1.1.1.1/9.9.9.9 are allowed; IPv6, QUIC and general gaming UDP are not supported. Assigned host addresses, private ranges and metadata endpoints are denied. Cloud NAT public aliases not assigned locally require deployment-specific restrictions. Offline mode remains explicit; no host-network fallback exists.
 
 ## Operations
 
@@ -85,3 +93,7 @@ Mock tests explicitly inject managers/runners/workers; their success does not pr
 ## Source and licensing
 
 SDK images, userdata, tokens, credentials, logs, runtime artifacts, node_modules and generated bundles are excluded from Git. ISC project license; distinct dependency and Android license terms in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Real Android 16 emulator, not Samsung One UI, a certified handset, or a Play Integrity/DRM guarantee.
+
+## Testing unpublished reviewed source
+
+`sudo bash scripts/bootstrap-local.sh --source-archive /absolute/reviewed-source.tgz --source-sha256 SHA256 --accept-host-changes --mode dashboard --accept-android-sdk-license` runs the same dependencies/installer using an explicitly trusted checksum-pinned source archive. Review the archive first. No Git commit or token is required; archive SHA is recorded separately from a commit. Source must exclude Git metadata, dependencies, credentials and runtime data. This path does not bypass host/resource/runtime checks. The published command above remains the old revision until the owner pushes.

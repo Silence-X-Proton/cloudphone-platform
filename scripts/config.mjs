@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 export function makeConfig(mode, port = 8790) {
   if (!['dashboard', 'standalone'].includes(mode)) throw new Error('Mode must be dashboard or standalone');
   if (!Number.isInteger(Number(port)) || !/^\d+$/.test(String(port)) || Number(port) < 1024 || Number(port) > 65535 || Number(port) === 8787) throw new Error('Invalid port (8787 reserved for live deployment)');
-  return { schemaVersion: 1, mode, host: '127.0.0.1', port: Number(port),
+  return { schemaVersion: 1, mode, networkMode: 'public', host: '127.0.0.1', port: Number(port),
     stateDir: '/var/lib/cloudphone-platform', sdkDir: '/opt/cloudphone-sdk/api36-v1',
     scrcpyServer: '/opt/cloudphone-sdk/api36-v1/scrcpy-server.jar',
     credentialsFile: '/var/lib/cloudphone-platform/credentials.json',

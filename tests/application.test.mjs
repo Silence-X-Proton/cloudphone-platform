@@ -79,7 +79,7 @@ test('H264 frames retain flags, complete Annex-B payload and microsecond PTS; pr
   ws.bufferedAmount = 1;
   assert.equal(sendPacket(ws, { type: 'data', pts, data }, 14), false);
   assert.equal(sent.length, 1); assert.equal(closed[0][0], 1013);
-  assert.deepEqual(Object.keys(QUALITY), ['economy', 'balanced', 'sharp']);
+  assert.deepEqual(Object.keys(QUALITY), ['gaming', 'economy', 'balanced', 'sharp']);
 });
 test('input rejects commands and invalid coordinate, key and UTF8 boundaries', () => {
   assert.equal(validateControl({ type: 'shell', command: 'id' }), false);
@@ -263,4 +263,19 @@ test('chunked oversized bodies return 413 and login rate limits return Retry-Aft
   assert.equal(response.status, 413);
   assert.equal((await f.login({ username: 'admin', password: 'wrong' })).status, 401);
   const blocked = await f.login(); assert.equal(blocked.status, 429); assert.equal(blocked.headers.get('retry-after'), '60');
+});
+
+test('stale ordered controls close session instead of replaying delayed input', async t => {
+  const f = await fixture(t); const session = await f.signIn(); const ws = await f.open(session);
+  ws.on('error', () => {}); t.after(() => ws.terminate());
+  await eventually(() => f.states[0]?.ready);
+  let release, entered = false, calls = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  f.states[0].client.controller.injectKeyCode = async () => { calls++; entered = true; await gate; };
+  ws.send(JSON.stringify({ type: 'key', action: 0, keyCode: 3 }));
+  await eventually(() => entered);
+  ws.send(JSON.stringify({ type: 'key', action: 1, keyCode: 3 }));
+  await delay(220); release();
+  await eventually(() => ws.readyState === WebSocket.CLOSED);
+  assert.equal(calls, 1, 'the queued stale release was not replayed');
 });

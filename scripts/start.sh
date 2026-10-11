@@ -16,6 +16,7 @@ MODE=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1
 PORT=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).port)' "$CONFIG/config.json")
 if [[ $INITIAL == yes && $MODE == standalone ]]; then PROVISION=yes; fi
 if [[ $PROVISION == yes && $MODE != standalone ]]; then fail '--provision-standalone requires standalone mode.'; fi
+CONFIG_FILE="$CONFIG/config.json" /usr/bin/node "$APP/scripts/runtime-check.mjs"
 if ! systemctl is-active --quiet "$BROKER_UNIT"; then
   # Broker pre-start performs integrity checks. No VM/phone creation here.
   systemctl start "$BROKER_UNIT"
