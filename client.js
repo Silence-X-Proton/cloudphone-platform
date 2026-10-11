@@ -285,7 +285,12 @@ function connect() {
   const params = new URLSearchParams({id: phoneId, quality, audio: preferences.audio, scale: String(preferences.scale / 100)});
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/stream?${params}`);
   socket = ws; ws.binaryType = 'arraybuffer';
-  let config, keyframe = false, localBacklog = false, closed = false;
+  let config, keyframe = false, localBacklog = false, closed = false, backlogs = 0, lastBacklog = 0, lastKeyRequest = 0;
+  const requestKeyframe = () => {
+    const now = performance.now();
+    if (now - lastKeyRequest < 500 || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 64 * 1024) return;
+    lastKeyRequest = now; ws.send('{"type":"keyframe"}');
+  };
   audio.limit = preferences.latency === 'gaming' || quality === 'gaming' ? 0.12 : 0.2;
   audio.setVolume(preferences.volume / 100, preferences.muted);
   connectTimer = setTimeout(() => { if (current === generation) ws.close(4004, 'Video timeout'); }, 20000);
@@ -316,17 +321,26 @@ function connect() {
         return;
       }
       // Never decode delta frames after reset/reconnect until SPS/PPS + IDR arrive.
-      if (!config || (!keyframe && !(flags & 2))) return;
+      if (!config || (!keyframe && !(flags & 2))) { if (config) requestKeyframe(); return; }
       const pts = Number(view.getBigUint64(1));
       if (!Number.isSafeInteger(pts)) throw new Error('Invalid video timestamp');
       // scrcpy PTS is media spacing, not browser wall time. Static frames and
       // event-loop stalls do not prove backlog; only the actual decoder queue does.
-      if (decoder.decodeQueueSize >= (preferences.latency === 'gaming' || quality === 'gaming' ? 3 : MAX_DECODE_QUEUE)) {
-        localBacklog = true;
-        // Browsers cannot send reserved close code 1013. Use an application code
-        // locally and treat server 1013 identically in onclose below.
-        ws.onmessage = null; ws.close(4003, 'Decode backlog');
-        releaseInput(); disposeDecoder(); return;
+      if (decoder.decodeQueueSize >= (preferences.latency === 'gaming' || quality === 'gaming' ? 5 : MAX_DECODE_QUEUE)) {
+        // Behind: skip to the next keyframe instead of reconnecting. Stream, input
+        // and audio stay up; only stale video is discarded. Reconnect only if the
+        // decoder keeps falling behind (budget refills every 3 s of healthy play).
+        const now = performance.now();
+        backlogs = Math.max(0, backlogs - Math.floor((now - (lastBacklog || now)) / 3000)) + 1;
+        lastBacklog = now;
+        if (backlogs > 20) {
+          localBacklog = true;
+          // Browsers cannot send reserved close code 1013. Use an application code
+          // locally and treat server 1013 identically in onclose below.
+          ws.onmessage = null; ws.close(4003, 'Decode backlog');
+          releaseInput(); disposeDecoder(); return;
+        }
+        decoder.reset(); keyframe = false; requestKeyframe(); return;
       }
       if (!keyframe) {
         decoder.configure({codec: config.codec, optimizeForLatency: true, hardwareAcceleration: 'no-preference'});

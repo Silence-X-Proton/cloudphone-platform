@@ -21,9 +21,9 @@ async function fixture() {
   }
   const $ = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   class Socket {
-    static OPEN = 1; readyState = 1; bufferedAmount = 0; closes = [];
+    static OPEN = 1; readyState = 1; bufferedAmount = 0; closes = []; sent = [];
     constructor(url) { this.url = url; sockets.push(this); }
-    send() {} close(code = 1000) { this.closes.push(code); this.readyState = 3; }
+    send(data) { this.sent.push(data); } close(code = 1000) { this.closes.push(code); this.readyState = 3; }
     async end(code) { this.readyState = 3; await this.onclose?.({code}); await flush(); }
     message(data) { this.onmessage?.({data}); }
   }
@@ -105,11 +105,21 @@ test('late health response, socket events and decoder output cannot disturb an a
   message({data:'invalid'});await close({code:4001});error();let frameClosed=false;output({close(){frameClosed=true;}});
   assert.equal(frameClosed,true);assert.equal(f.$('status').textContent,status);await f.tick(90000);assert.equal(f.sockets.length,2);
 });
-test('real decoder backlog closes once; at most three automatic overload recoveries even after stable frames',async()=>{
+test('a single decoder backlog keeps the session and requests a fresh keyframe',async()=>{
+  const f=await fixture();f.start();await f.tick(31000);
+  const ws=f.sockets.at(-1);f.decoders.at(-1).decodeQueueSize=6;
+  ws.message(f.packet(0,1));
+  assert.deepEqual(ws.closes,[],'a single backlog must not disconnect');
+  assert.deepEqual(ws.sent.map(data=>JSON.parse(data).type),['keyframe'],'a fresh keyframe is requested');
+});
+test('sustained decoder backlog still closes once, with at most three automatic overload recoveries',async()=>{
   const f=await fixture();
   for(let i=0;i<4;i++){
     f.start();await f.tick(31000);const ws=f.sockets.at(-1);const d=f.decoders.at(-1);d.decodeQueueSize=6;
-    ws.message(f.packet(0,1));assert.deepEqual(ws.closes,[4003]);await ws.end(4003);await f.tick(10000);
+    // After each skip the viewer waits for a keyframe, so sustained backlog is
+    // measured over keyframes. Only exceeding the budget gives up and reconnects.
+    for(let n=0;n<21;n++) ws.message(f.packet(2,n+1));
+    assert.deepEqual(ws.closes,[4003]);await ws.end(4003);await f.tick(10000);
   }
   assert.equal(f.sockets.length,4);assert.match(f.$('status').textContent,/paused/);await f.tick(90000);assert.equal(f.sockets.length,4);
   assert.deepEqual(f.sockets.map(ws=>new URL(ws.url).searchParams.get('quality')),['balanced','economy','economy','economy']);
@@ -120,8 +130,10 @@ test('90s scheduling stalls with an empty queue, backwards PTS, and queue thresh
   const f=await fixture();f.start();const ws=f.sockets[0];await f.tick(90000);
   for(const pts of [900000,1,1,0,100]) ws.message(f.packet(0,pts));
   assert.deepEqual(ws.closes,[]);await f.change('latency','gaming');
-  f.decoders[0].decodeQueueSize=2;ws.message(f.packet(0,200));assert.deepEqual(ws.closes,[]);
-  f.decoders[0].decodeQueueSize=3;ws.message(f.packet(0,300));assert.deepEqual(ws.closes,[4003]);
+  f.decoders[0].decodeQueueSize=4;ws.message(f.packet(0,200));assert.deepEqual(ws.closes,[]);
+  // Gaming reaches its threshold at five queued frames and skips rather than closing.
+  f.decoders[0].decodeQueueSize=5;ws.message(f.packet(0,300));assert.deepEqual(ws.closes,[]);
+  assert.deepEqual(ws.sent.map(data=>JSON.parse(data).type),['keyframe']);
 });
 test('server overload follows the same bounded policy; access refusal is never retried',async()=>{
   const f=await fixture();

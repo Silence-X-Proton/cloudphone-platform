@@ -235,7 +235,7 @@ test('worker start validates audio codec and fractional encoded scale, not guest
   const {validStart,streamOptions}=await import('../lib/phone-worker.mjs');
   assert(validStart({type:'start',quality:'gaming',scale:.5,audio:'raw'}));
   for(const m of [{scale:50},{audio:'aac'},{scale:0},{latency:'gaming'}])assert.equal(validStart({type:'start',quality:'balanced',...m}),false);
-  assert.deepEqual(streamOptions({quality:'gaming',scale:.5,audio:'raw'}),{videoBitRate:2500000,maxSize:480,maxFps:60,audio:true,audioCodec:'raw',audioBitRate:128000});
+  assert.deepEqual(streamOptions({quality:'gaming',scale:.5,audio:'raw'}),{videoBitRate:1800000,maxSize:448,maxFps:60,audio:true,audioCodec:'raw',audioBitRate:128000});
   assert.equal(streamOptions({quality:'balanced'}).audio,true);
   assert.equal(streamOptions({quality:'balanced',audio:'off'}).audio,false);
 });

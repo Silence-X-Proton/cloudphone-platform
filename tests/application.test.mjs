@@ -265,17 +265,27 @@ test('chunked oversized bodies return 413 and login rate limits return Retry-Aft
   const blocked = await f.login(); assert.equal(blocked.status, 429); assert.equal(blocked.headers.get('retry-after'), '60');
 });
 
-test('stale ordered controls close session instead of replaying delayed input', async t => {
+test('congestion skips stale moves only; a delayed key release still applies and the session survives', async t => {
   const f = await fixture(t); const session = await f.signIn(); const ws = await f.open(session);
   ws.on('error', () => {}); t.after(() => ws.terminate());
   await eventually(() => f.states[0]?.ready);
-  let release, entered = false, calls = 0;
+  const video = f.states[0].video;
+  let release, entered = false, keys = 0;
+  const touches = [];
   const gate = new Promise(resolve => { release = resolve; });
-  f.states[0].client.controller.injectKeyCode = async () => { calls++; entered = true; await gate; };
+  f.states[0].client.controller.injectKeyCode = async () => { keys++; entered = true; await gate; };
+  f.states[0].client.controller.injectTouch = async m => { touches.push(m.action); };
   ws.send(JSON.stringify({ type: 'key', action: 0, keyCode: 3 }));
   await eventually(() => entered);
+  // Queued behind the blocked key: a move becomes stale and is dropped, while the
+  // pointer down/up pair and the key release must still reach Android.
+  const point = { type: 'touch', id: 1, x: 0, y: 0, width: video.width, height: video.height, pressure: 0.5 };
+  ws.send(JSON.stringify({ ...point, action: 0 }));
+  ws.send(JSON.stringify({ ...point, action: 2 }));
+  ws.send(JSON.stringify({ ...point, action: 1, pressure: 0 }));
   ws.send(JSON.stringify({ type: 'key', action: 1, keyCode: 3 }));
   await delay(220); release();
-  await eventually(() => ws.readyState === WebSocket.CLOSED);
-  assert.equal(calls, 1, 'the queued stale release was not replayed');
+  await eventually(() => keys === 2);
+  assert.deepEqual(touches, [0, 1], 'only the stale move is skipped');
+  assert.equal(ws.readyState, WebSocket.OPEN, 'congestion must not end the session');
 });

@@ -21,6 +21,7 @@ const keyCodes = new Set([3, 4, 19, 20, 21, 22, 23, 24, 25, 61, 62, 66, 67, 92, 
 
 // No client-supplied shell, app names, paths, or ADB service names are accepted.
 export function validateControl(m) {
+  if (m?.type === 'keyframe') return Object.keys(m).length === 1;
   if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
   const fields = { key: ['type', 'keyCode', 'action', 'repeat', 'metaState'], text: ['type', 'text'],
     touch: ['type', 'id', 'action', 'x', 'y', 'width', 'height', 'pressure'], scroll: ['type', 'x', 'y', 'width', 'height', 'dx', 'dy'] };
@@ -45,7 +46,7 @@ export function encodePacket(packet) {
 }
 
 export const QUALITY = Object.freeze({
-  gaming: Object.freeze({ videoBitRate: 2500000, maxSize: 960, maxFps: 60 }),
+  gaming: Object.freeze({ videoBitRate: 1800000, maxSize: 900, maxFps: 60 }),
   economy: Object.freeze({ videoBitRate: 1500000, maxSize: 720, maxFps: 24 }),
   balanced: Object.freeze({ videoBitRate: 4000000, maxSize: 1140, maxFps: 30 }),
   sharp: Object.freeze({ videoBitRate: 6000000, maxSize: 1600, maxFps: 30 }),
@@ -379,8 +380,9 @@ export async function createApplication({ credentials, manager, mode = 'dashboar
       state.pending++;
       state.controls = state.controls.then(async () => {
         if (state.stopped || ws.readyState !== WebSocket.OPEN) return;
-        if (performance.now() - queuedAt > 150) { ws.close(1013, 'Stale control queue; reconnect'); return; }
+        if (performance.now() - queuedAt > 150 && m.type === 'touch' && m.action === 2) return;
         const c = state.client.controller;
+        if (m.type === 'keyframe') { await c.resetVideo?.(); return; }
         if (m.type === 'key') await c.injectKeyCode({action: m.action, keyCode: m.keyCode, repeat: m.repeat ?? 0, metaState: m.metaState ?? 0});
         // Clipboard paste preserves Unicode and works with Android's active IME.
         if (m.type === 'text') { if (m.text.length === 1 && m.text.charCodeAt(0) < 128) await c.injectText(m.text); else await c.setClipboard({sequence: 0n, content: m.text, paste: 1}); }
