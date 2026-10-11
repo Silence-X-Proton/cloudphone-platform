@@ -1,0 +1,32 @@
+[Unit]
+Description=Cloudphone HTTPS quick tunnel (web only)
+After=cloudphone-platform.service network-online.target
+Wants=cloudphone-platform.service
+
+[Service]
+Type=exec
+DynamicUser=yes
+EnvironmentFile=/etc/cloudphone-platform-web/tunnel.env
+ExecStart=/opt/cloudphone-sdk/api36-v1/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:${PORT}
+# + lifts UID restrictions solely to enqueue a fixed origin-sync service.
+# --no-block avoids a dependency cycle with origin-sync's After=tunnel ordering.
+ExecStartPost=+/usr/bin/systemctl --no-block restart cloudphone-platform-origin.service
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

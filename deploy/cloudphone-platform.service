@@ -1,0 +1,40 @@
+[Unit]
+Description=Cloudphone unprivileged HTTP dashboard
+After=cloudphone-platform-broker.service
+Wants=cloudphone-platform-broker.service
+
+[Service]
+Type=exec
+User=cloudphone-web
+Group=cloudphone-web
+WorkingDirectory=/opt/cloudphone-platform
+Environment=CONFIG_FILE=/etc/cloudphone-platform-web/config.json
+ExecStart=/usr/bin/node /opt/cloudphone-platform/server.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/var/lib/cloudphone-platform /etc/cloudphone-platform
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TasksMax=256
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

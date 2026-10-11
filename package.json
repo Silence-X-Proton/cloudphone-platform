@@ -1,0 +1,27 @@
+{
+  "name": "cloudphone-platform",
+  "version": "0.1.0",
+  "description": "Resource-budgeted Android 16 cloud phones with authenticated H.264 control",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "build": "esbuild client.js --bundle --format=esm --target=es2022 --minify --outfile=public/client.js",
+    "start": "node server.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@yume-chan/adb": "2.6.4",
+    "@yume-chan/adb-scrcpy": "2.3.2",
+    "@yume-chan/adb-server-node-tcp": "2.5.2",
+    "@yume-chan/scrcpy": "2.3.0",
+    "@yume-chan/scrcpy-decoder-webcodecs": "2.5.3",
+    "esbuild": "0.28.2",
+    "ws": "8.22.0"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
+}

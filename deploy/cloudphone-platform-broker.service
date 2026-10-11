@@ -1,0 +1,35 @@
+[Unit]
+Description=Cloudphone privileged Unix broker
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/cloudphone-platform/.cloudphone-install.json
+
+[Service]
+Type=exec
+User=root
+Group=cloudphone-web
+WorkingDirectory=/opt/cloudphone-platform
+Environment=CONFIG_FILE=/etc/cloudphone-platform/config.json
+ExecStartPre=/opt/cloudphone-platform/scripts/run-service.sh --check-broker
+ExecStart=/usr/bin/node /opt/cloudphone-platform/lib/broker.mjs
+ExecStopPost=/usr/bin/node /opt/cloudphone-platform/scripts/cleanup.mjs
+RuntimeDirectory=cloudphone-platform
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=no
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+TimeoutStopSec=900
+KillMode=control-group
+UMask=0077
+TasksMax=8192
+LimitNOFILE=65536
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_MKNOD CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_RESOURCE CAP_KILL CAP_SYS_CHROOT
+# NO filesystem namespace: broker mounts must be visible to host systemd units.
+
+[Install]
+WantedBy=multi-user.target
