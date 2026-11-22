@@ -94,6 +94,38 @@ Mock tests explicitly inject managers/runners/workers; their success does not pr
 
 SDK images, userdata, tokens, credentials, logs, runtime artifacts, node_modules and generated bundles are excluded from Git. ISC project license; distinct dependency and Android license terms in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Real Android 16 emulator, not Samsung One UI, a certified handset, or a Play Integrity/DRM guarantee.
 
+## Continuous integration and automated deployment
+
+Two GitHub Actions workflows ship with the repository. They are deliberately split because the privileged installer has hard host requirements that a standard GitHub-hosted runner cannot satisfy.
+
+### `.github/workflows/ci.yml` — unprivileged verification
+
+Runs on `ubuntu-24.04` hosted runners for every push, pull request and manual dispatch.
+
+- Builds and tests on Node 22 and Node 24.
+- Verifies exact dependency pins and lockfile registry integrity with `scripts/config.mjs lock`.
+- Runs the full suite (`npm test`).
+- Checks Bash and Python syntax across `scripts/` and `tests/`.
+- Rebuilds the browser bundle and fails if `public/client.js` is not the committed output.
+- Runs the **real** `scripts/preflight.py` and publishes the resulting capability JSON as a job summary and artifact.
+
+The preflight job is expected to report `supported: false` on a hosted runner. That is recorded openly, not hidden, because the installer genuinely cannot run there.
+
+### `.github/workflows/privileged-deploy.yml` — real installation
+
+Manual dispatch only, and it targets `self-hosted` runners. It requires a runner that truly qualifies: Ubuntu 22.04/24.04, systemd as PID 1, nested KVM exposed as `/dev/kvm`, an unbound loop device, a writable unified cgroup2 subtree, an existing `kvm` group, and non-overlay `/opt` and `/var/lib` with 50 GiB free each.
+
+1. `verify-host` runs the real preflight and refuses to continue on an unqualified host, publishing the exact missing capabilities.
+2. `deploy` runs `scripts/dependencies.sh --accept-host-changes`, then `scripts/install.sh` against a resolved 40-character commit SHA fetched from this repository.
+3. Managed unit status is captured, the quick-tunnel origin and dashboard summary are published to the job summary, and the generated admin password path is shown **without** printing the secret.
+4. Diagnostics are uploaded, and the workflow uninstalls at the end unless you opt into retaining data.
+
+The workflow never prints the admin password, phone access keys or tunnel tokens. Retrieve the password on the host from `/var/lib/cloudphone-platform/initial-admin-password`.
+
+### Why the split is not a limitation to hide
+
+Hosted runners are containers or VMs without `/dev/kvm`, without a writable cgroup subtree, and with `/var/lib` on an overlay filesystem. `scripts/preflight.py` rejects all three, so any workflow that claimed to install the platform on a hosted runner would be misreporting its own result. The CI workflow therefore proves the source builds, tests and reports its own capability honestly, while the deploy workflow performs the actual installation only where it can legitimately succeed.
+
 ## Testing unpublished reviewed source
 
 `sudo bash scripts/bootstrap-local.sh --source-archive /absolute/reviewed-source.tgz --source-sha256 SHA256 --accept-host-changes --mode dashboard --accept-android-sdk-license` runs the same dependencies/installer using an explicitly trusted checksum-pinned source archive. Review the archive first. No Git commit or token is required; archive SHA is recorded separately from a commit. Source must exclude Git metadata, dependencies, credentials and runtime data. This path does not bypass host/resource/runtime checks. The published command above remains the old revision until the owner pushes.

@@ -1,0 +1,130 @@
+name: CI
+
+# Fast, unprivileged verification. Runs on standard GitHub-hosted runners.
+# This job never claims to install the platform: the privileged installer's
+# preflight requires systemd PID1, /dev/kvm, an unbound loop device, a
+# writable cgroup2 subtree and a non-overlay /var/lib, none of which a
+# standard hosted runner provides. The preflight job below reports the
+# runner's real capability JSON so that limitation is visible, not hidden.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify dependency pins and lockfile integrity
+        run: node scripts/config.mjs lock package.json package-lock.json
+
+      - name: Build browser bundle
+        run: npm run build
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Bash syntax check
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r -d '' file; do
+            bash -n "$file" || { echo "syntax error: $file"; fail=1; }
+          done < <(find scripts tests -name '*.sh' -type f -print0)
+          exit "$fail"
+
+      - name: Python syntax check
+        run: |
+          python3 -m compileall -q scripts tests && echo 'python syntax ok'
+
+      - name: Confirm generated bundle is committed unchanged
+        run: |
+          set -euo pipefail
+          npm run build
+          if ! git diff --quiet -- public/client.js; then
+            echo 'public/client.js differs from the committed bundle; run npm run build and commit.'
+            git --no-pager diff --stat -- public/client.js
+            exit 1
+          fi
+          echo 'public/client.js matches the committed bundle'
+
+  runtime-capability-report:
+    name: Runner capability report (preflight, read-only)
+    runs-on: ubuntu-24.04
+    needs: build-and-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run real preflight and record the result
+        run: |
+          set -uo pipefail
+          mkdir -p preflight
+          rc=0
+          sudo python3 scripts/preflight.py dashboard 8790 > preflight/dashboard.json 2>&1 || rc=$?
+          cat preflight/dashboard.json
+          echo "preflight exit code: $rc"
+          # A standard hosted runner is expected to be unsupported. That is a
+          # fact to report, not a failure to paper over.
+          if [ "$rc" -eq 0 ]; then
+            echo '::notice::Hosted runner unexpectedly reports full preflight support.'
+          else
+            echo '::notice::Hosted runner cannot host the privileged install (expected). See preflight/dashboard.json.'
+          fi
+          exit 0
+
+      - name: Summarize which host capabilities are missing
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          text = pathlib.Path('preflight/dashboard.json').read_text()
+          start = text.find('{')
+          data = json.loads(text[start:]) if start != -1 else {'supported': False, 'checks': []}
+          print('## Preflight capability report')
+          print()
+          print(f"Supported on this runner: **{data.get('supported')}**")
+          print()
+          print('| Check | OK | Detail |')
+          print('|---|---|---|')
+          for entry in data.get('checks', []):
+            ok = 'yes' if entry.get('ok') else 'no'
+            detail = str(entry.get('detail', '')).replace('|', '\\|')
+            print(f"| {entry.get('check')} | {ok} | {detail} |")
+          print()
+          if not data.get('supported'):
+            print('The privileged installer is intentionally refused here.')
+            print('Use the `Privileged deploy` workflow on a self-hosted KVM runner.')
+          PY
+
+      - name: Upload preflight report
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-dashboard
+          path: preflight/dashboard.json
+          if-no-files-found: error
