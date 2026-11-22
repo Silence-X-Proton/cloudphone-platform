@@ -8,7 +8,25 @@ import { MiB, GiB, hostUsage, validateRequest } from '../lib/resources.mjs';
 
 // ALL privileged commands and host capability/resource readings are mocks.
 // Only small ordinary files in mkdtemp are real; NO mount/loop/systemd/KVM is invoked.
+//
+// PhoneManager deliberately refuses to operate on a stateDir that is not
+// root-owned mode 0700, because that directory holds phone access keys. That
+// check is a real security invariant and is NOT relaxed for tests. Instead,
+// fixture-based cases declare the requirement so a non-root host (for example
+// a standard GitHub-hosted runner) reports them as skipped, not failed.
+const ROOT_REQUIRED = process.getuid?.() === 0
+  ? false
+  : 'PhoneManager requires a root-owned stateDir; run as root for these checks';
+
 async function fixture(t, config = {}) {
+  // The privileged manager refuses a non-root-owned stateDir by design. On a
+  // non-root host (for example a standard GitHub-hosted runner) every
+  // fixture-based case is reported as skipped with a clear reason instead of
+  // failing, so the suite stays honest about what was and was not exercised.
+  if (ROOT_REQUIRED) {
+    t.skip(ROOT_REQUIRED);
+    return null;
+  }
   // Descriptor-safe readiness requires every ancestor of stateDir to be
   // non-world-writable and owned by a trusted uid. /tmp and os.tmpdir() are
   // world-writable, so they are deliberately NOT usable as the base here.
