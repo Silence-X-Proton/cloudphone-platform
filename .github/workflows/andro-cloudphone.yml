@@ -41,7 +41,7 @@ jobs:
       - name: "0/9 Preflight + KVM check"
         run: |
           set -Eeuo pipefail
-          echo "::notice::ANDRO CLOUD v2026.3.5 // Android 16 Cloud Phone // Linux host"
+          echo "::notice::ANDRO CLOUD v2026.3.6 // Android 16 Cloud Phone // Linux host"
           echo "runner: $RUNNER_NAME | $(uname -m)"
           RAM="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
           CORES="$(nproc)"
@@ -437,9 +437,21 @@ jobs:
           esac
           if [ "$ENABLE_CF" = "1" ]; then
             echo "Starting Cloudflare quick tunnel..."
-            curl -fsSL --retry 3 --max-time 120 -o /tmp/andro/cf.tgz "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$TARCH.tgz" || true
-            if [ -s /tmp/andro/cf.tgz ]; then
-              tar -xzf /tmp/andro/cf.tgz -C /tmp/andro && chmod +x /tmp/andro/cloudflared
+            rm -f /tmp/andro/cloudflared /tmp/andro/cf.tgz
+            # naye releases me asset naam badla: plain binary cloudflared-linux-amd64 (tgx x86_64 deprecated)
+            curl -fsSL --retry 3 --max-time 180 -o /tmp/andro/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$TARCH" || true
+            if [ -s /tmp/andro/cloudflared ] && head -c 4 /tmp/andro/cloudflared | grep -q ELF; then
+              chmod +x /tmp/andro/cloudflared
+              echo "cloudflared binary OK ($(du -h /tmp/andro/cloudflared | cut -f1))"
+            else
+              echo "plain binary download fail - purana tgz try karta hoon..."
+              rm -f /tmp/andro/cloudflared /tmp/andro/cf.tgz
+              curl -fsSL --retry 3 --max-time 180 -o /tmp/andro/cf.tgz "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.tgz" || true
+              if [ -s /tmp/andro/cf.tgz ]; then
+                tar -xzf /tmp/andro/cf.tgz -C /tmp/andro && chmod +x /tmp/andro/cloudflared
+              fi
+            fi
+            if [ -x /tmp/andro/cloudflared ]; then
               nohup /tmp/andro/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080 > /tmp/andro/cf.log 2>&1 &
               echo $! > /tmp/andro/cf.pid
               for i in $(seq 1 45); do
@@ -448,7 +460,7 @@ jobs:
                 sleep 2
               done
             else
-              echo "::warning::cloudflared download failed"
+              echo "::warning::cloudflared download failed (dono URLs)"
             fi
           fi
           if [ "$ENABLE_NGROK" = "1" ]; then
