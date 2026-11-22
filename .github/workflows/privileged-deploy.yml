@@ -147,7 +147,7 @@ jobs:
           } > diagnostics/units.txt
           cat diagnostics/units.txt
 
-      - name: Publish tunnel and dashboard summary
+      - name: Publish tunnel URL and access key instructions
         if: always()
         run: |
           set -uo pipefail
@@ -162,16 +162,15 @@ jobs:
             echo "| Loopback origin | \`http://127.0.0.1:$port\` |"
             origin=''
             if [ -f /etc/cloudphone-platform-web/config.json ]; then
-              origin=$(python3 -c "import json,sys;print(json.load(open('/etc/cloudphone-platform-web/config.json')).get('publicOrigin',''))" 2>/dev/null || true)
+              origin=$(python3 -c "import json;print(json.load(open('/etc/cloudphone-platform-web/config.json')).get('publicOrigin',''))" 2>/dev/null || true)
             fi
             if [ -n "$origin" ]; then
               echo "| Public HTTPS origin | $origin |"
             else
               echo '| Public HTTPS origin | not configured (tunnel did not reach readiness) |'
             fi
-            echo "| Admin username | admin |"
             echo ''
-            echo '### Cloudflare quick tunnel'
+            echo '### Cloudflare tunnel URL'
             echo ''
             # Only public URLs and non-secret state; never tunnel tokens, never credentials.
             url=''
@@ -180,23 +179,34 @@ jobs:
                 | grep -Eo 'https://[a-z0-9]+(-[a-z0-9]+)*\.trycloudflare\.com' | sort -u | tail -n1 || true)
             fi
             if [ -n "$url" ]; then
-              echo "Tunnel URL: $url"
+              echo "**Tunnel URL:** $url"
             else
               echo 'Tunnel URL: unavailable in this run (see tunnel unit status above).'
             fi
             echo ''
-            echo 'The quick tunnel hostname is temporary, carries no SLA, and can change after a restart.'
-            echo 'Use only the printed canonical origin for login; older hostnames may no longer apply.'
+            echo 'Temporary hostname, no SLA, can change after restart. Use only the printed origin for login.'
             echo ''
-            echo '### Credentials'
+            echo '### Admin password'
             echo ''
-            echo 'The generated admin password is written root-only and is deliberately not printed here:'
+            echo 'Root-only file (not printed here):'
             echo ''
             echo '```'
             echo '/var/lib/cloudphone-platform/initial-admin-password'
             echo '```'
             echo ''
-            echo 'Retrieve it only on the host, share it out of band, and store it in a secret manager you trust.'
+            echo '### Phone access key'
+            echo ''
+            echo 'Har phone ka apna 43-char access key hota hai (dashboard mode mein).'
+            echo 'Key public record mein kabhi nahi aata, root-only state mein rehta hai.'
+            echo ''
+            echo 'Dashboard mein admin login karo, phone row pe **Reveal / Copy** dabao -> wahi key milegi.'
+            echo 'Standalone mode mein key install ke waqt root-only file mein likhi jaati hai:'
+            echo ''
+            echo '```'
+            echo '/var/lib/cloudphone-platform/<phone-id>/record.json  (root-only, 0600)'
+            echo '```'
+            echo ''
+            echo 'Key ko URL mein na daalo; login form mein submit karo.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify running services
