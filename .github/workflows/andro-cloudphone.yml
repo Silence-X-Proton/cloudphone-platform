@@ -41,7 +41,7 @@ jobs:
       - name: "0/9 Preflight + KVM check"
         run: |
           set -Eeuo pipefail
-          echo "::notice::ANDRO CLOUD v2026.3.4 // Android 16 Cloud Phone // Linux host"
+          echo "::notice::ANDRO CLOUD v2026.3.5 // Android 16 Cloud Phone // Linux host"
           echo "runner: $RUNNER_NAME | $(uname -m)"
           RAM="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
           CORES="$(nproc)"
@@ -314,14 +314,14 @@ jobs:
           "$ADB" start-server > /dev/null 2>&1 || true
           ok=""
           for i in $(seq 1 90); do
-            ST="$(adb_shell_state() { "$ADB" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'; }; adb_shell_state)"
+            ST="$("$ADB" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
             if [ "$ST" = "1" ]; then ok=1; break; fi
             if ! kill -0 "$(cat /tmp/andro/emu.pid)" 2>/dev/null; then
               echo "::error::emulator process died - logs:"
               tail -40 /tmp/andro/emu.log || true
               exit 1
             fi
-            UNAUTH="$(grep -c 'unauthorized' <("$ADB" devices 2>/dev/null) || true)"
+            UNAUTH="$("$ADB" devices 2>/dev/null | grep -c 'unauthorized' || true)"
             if [ "${UNAUTH:-0}" -gt 0 ] && [ $((i % 9)) -eq 1 ]; then
               echo "device unauthorized — adbkey re-auth attempt"
               "$ADB" kill-server || true
@@ -329,7 +329,7 @@ jobs:
               "$ADB" start-server > /dev/null 2>&1 || true
             fi
             if [ $((i % 9)) -eq 0 ]; then
-              echo "boot wait: $((i * 20))s... (adb: $("$ADB" devices 2>/dev/null | tail -n +2 | head -2 | tr '\n' ' '))"
+              echo "boot wait: $((i * 20))s... (adb: $("$ADB" devices 2>/dev/null | tail -n +2 | head -2 | tr '\n' ' ' || true))"
             fi
             sleep 20
           done
