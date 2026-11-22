@@ -41,7 +41,7 @@ jobs:
       - name: "0/9 Preflight + KVM check"
         run: |
           set -Eeuo pipefail
-          echo "::notice::ANDRO CLOUD v2026.3.1 // Android 16 Cloud Phone // Linux host"
+          echo "::notice::ANDRO CLOUD v2026.3.2 // Android 16 Cloud Phone // Linux host"
           echo "runner: $RUNNER_NAME | $(uname -m)"
           RAM="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
           CORES="$(nproc)"
@@ -187,10 +187,10 @@ jobs:
             AVDDIR="$ANDROID_AVD_HOME/cloudphone.avd"
             mkdir -p "$AVDDIR"
             IMGREL="$(echo "$ANDRO_IMG" | tr ';' '/')"
-            if [ ! -d "/tmp/andro/sdk/system-images/$IMGREL" ]; then
-              FOUND="$(find /tmp/andro/sdk/system-images -mindepth 4 -maxdepth 4 -type d 2>/dev/null | head -1 || true)"
+            if [ ! -f "/tmp/andro/sdk/system-images/$IMGREL/kernel-ranchu" ]; then
+              FOUND="$(find /tmp/andro/sdk/system-images -mindepth 4 -maxdepth 4 -type f -name kernel-ranchu 2>/dev/null | head -1 || true)"
               if [ -n "$FOUND" ]; then
-                IMGREL="$(printf '%s' "$FOUND" | sed 's#^/tmp/andro/sdk/system-images/##')"
+                IMGREL="$(dirname "$FOUND" | sed 's#^/tmp/andro/sdk/system-images/##')"
               fi
             fi
             TAGID="$(printf '%s' "$IMGREL" | cut -d/ -f3)"
@@ -262,6 +262,16 @@ jobs:
             cat "$CFG" || true
             exit 1
           fi
+          SYSREL="$(grep '^image.sysdir.1=' "$CFG" | head -1 | cut -d= -f2)"
+          SYSABS="/tmp/andro/sdk/$SYSREL"
+          echo "kernel check: $SYSABS"
+          ls "$SYSABS" | head -12 || true
+          if [ ! -f "$SYSABS/kernel-ranchu" ]; then
+            echo "::error::system image dir me kernel-ranchu NAHI mila: $SYSABS - image path galat hai (data/ subdir pakda gaya tha?)"
+            find /tmp/andro/sdk/system-images -name kernel-ranchu 2>/dev/null || true
+            exit 1
+          fi
+          echo "kernel-ranchu OK: $(du -h "$SYSABS/kernel-ranchu" | cut -f1)"
           echo "emulator -list-avds (informational only):"
           "$EMU" -list-avds 2>&1 | head -5 || true
           echo "--- final config.ini ---"
