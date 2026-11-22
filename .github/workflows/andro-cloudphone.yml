@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: andro-cloud-lin-${{ github.workflow }}-${{ github.ref }}
@@ -41,7 +42,7 @@ jobs:
       - name: "0/9 Preflight + KVM check"
         run: |
           set -Eeuo pipefail
-          echo "::notice::ANDRO CLOUD v2026.3.6 // Android 16 Cloud Phone // Linux host"
+          echo "::notice::ANDRO CLOUD v2026.3.7 // Android 16 Cloud Phone // Linux host"
           echo "runner: $RUNNER_NAME | $(uname -m)"
           RAM="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
           CORES="$(nproc)"
@@ -538,6 +539,19 @@ jobs:
             echo "::notice title=androv3::pass=$AUTH_PASS"
           fi
           echo "::notice title=androv3::live=1"
+          echo "=== commit-status channel (androv4 instant access) ==="
+          ST_API="https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}"
+          ST_BODY="$(printf '{"state":"success","context":"andro-live","target_url":"%s","description":"cf=%s ng=%s user=%s pass=%s mode=%s run=%s"}' \
+            "${PRIMARY:-$CF_URL}" "${CF_URL:-}" "${NGROK_URL:-}" "${AUTH_USER:-}" "${AUTH_PASS:-}" "${AUTH_MODE:-}" "${GITHUB_RUN_ID:-}")"
+          ST_CODE="$(curl -s -o /tmp/andro/status.json -w '%{http_code}' -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -d "$ST_BODY" "$ST_API" || true)"
+          echo "commit-status push: HTTP $ST_CODE"
+          if [ "$ST_CODE" != "201" ]; then
+            echo "::warning::commit-status push fail (annotations + summary abhi bhi kaam karenge):"
+            head -c 300 /tmp/andro/status.json 2>/dev/null || true
+          fi
 
       - name: "Failure Diagnostics (auto)"
         if: failure()
