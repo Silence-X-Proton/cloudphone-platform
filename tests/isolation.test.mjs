@@ -9,8 +9,31 @@ import { MiB, GiB, hostUsage, validateRequest } from '../lib/resources.mjs';
 // ALL privileged commands and host capability/resource readings are mocks.
 // Only small ordinary files in mkdtemp are real; NO mount/loop/systemd/KVM is invoked.
 async function fixture(t, config = {}) {
-  // Descriptor-safe readiness forbids world-writable ancestors such as /tmp.
-  const dir = await fs.mkdtemp(path.join('/a0/usr/workdir', 'cloudphone-unit-'));
+  // Descriptor-safe readiness requires every ancestor of stateDir to be
+  // non-world-writable and owned by a trusted uid. /tmp and os.tmpdir() are
+  // world-writable, so they are deliberately NOT usable as the base here.
+  // Order: explicit override, then a private dir under the working tree
+  // (works in CI checkouts and in dev containers), created root/user-owned.
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+  const base = await (async () => {
+    const candidates = [
+      process.env.CLOUDPHONE_TEST_TMP,
+      path.join(process.cwd(), '.cloudphone-test-tmp-' + uid),
+    ];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      try {
+        const created = await fs.mkdir(candidate, { recursive: true, mode: 0o700 });
+        if (created) await fs.chmod(candidate, 0o700);
+        const st = await fs.stat(candidate);
+        if ((st.mode & 0o022) !== 0) continue;
+        await fs.access(candidate, (fs.constants?.W_OK ?? 2));
+        return candidate;
+      } catch { /* try the next candidate */ }
+    }
+    throw new Error('No writable non-world-writable base for test state; set CLOUDPHONE_TEST_TMP');
+  })();
+  const dir = await fs.mkdtemp(path.join(base, 'cloudphone-unit-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const calls = []; const images = new Map(); const loops = new Map(); const mounts = new Map(); const units = new Map();
   const io = new Proxy(fs, { get(target, key) {
