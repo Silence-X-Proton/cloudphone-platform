@@ -41,7 +41,7 @@ jobs:
       - name: "0/9 Preflight + KVM check"
         run: |
           set -Eeuo pipefail
-          echo "::notice::ANDRO CLOUD v2026.3.2 // Android 16 Cloud Phone // Linux host"
+          echo "::notice::ANDRO CLOUD v2026.3.3 // Android 16 Cloud Phone // Linux host"
           echo "runner: $RUNNER_NAME | $(uname -m)"
           RAM="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
           CORES="$(nproc)"
@@ -140,7 +140,7 @@ jobs:
           ls -la /dev/kvm
           echo "::notice::KVM ready"
 
-      - name: "5/9 AVD Create (full RAM + sparse 192G storage) + AVD Doctor"
+      - name: "5/9 AVD Create (full RAM + dynamic storage) + AVD Doctor"
         run: |
           set -Eeuo pipefail
           AVDM="/tmp/andro/sdk/cmdline-tools/latest/bin/avdmanager"
@@ -175,6 +175,14 @@ jobs:
             echo "emulator shared libs OK"
           fi
           echo "=== avdmanager create avd ==="
+          AVAIL_MB="$(df -BM /home/runner/.android 2>/dev/null | tail -1 | awk '{print int($4)}' | tr -d 'M')"
+          if [ -z "$AVAIL_MB" ] || [ "$AVAIL_MB" -le 0 ]; then AVAIL_MB="$(df -BM / | tail -1 | awk '{print int($4)}' | tr -d 'M')"; fi
+          echo "available disk at AVD home: ${AVAIL_MB} MB"
+          # sparse hai, par emulator physical headroom check karta hai - safely 60% tak use karo
+          DATAMB=$(( AVAIL_MB * 60 / 100 ))
+          if [ "$DATAMB" -lt 8192 ]; then DATAMB=8192; fi
+          if [ "$DATAMB" -gt 61440 ]; then DATAMB=61440; fi
+          echo "datasize: ${DATAMB}MB (sparse, actual usage bohot kam hoga)"
           if echo no | "$AVDM" create avd -n cloudphone -k "$ANDRO_IMG" --force > /tmp/andro/avd.log 2>&1; then
             echo "::notice title=androv3::avdmode=avdmanager"
           else
@@ -211,7 +219,7 @@ jobs:
               echo "hw.lcd.width=1080"
               echo "hw.lcd.height=2400"
               echo "hw.lcd.density=440"
-              echo "disk.dataPartition.size=192G"
+              echo "disk.dataPartition.size=${DATAMB}M"
               echo "hw.keyboard=yes"
               echo "hw.audioInput=yes"
               echo "hw.audioOutput=yes"
@@ -235,7 +243,7 @@ jobs:
           if [ "$COREST" -lt 2 ]; then COREST=2; fi
           {
             echo "hw.ramSize=$RAMT"
-            echo "disk.dataPartition.size=192G"
+            echo "disk.dataPartition.size=${DATAMB}M"
             echo "hw.lcd.width=1080"
             echo "hw.lcd.height=2400"
             echo "hw.lcd.density=440"
@@ -277,7 +285,7 @@ jobs:
           echo "--- final config.ini ---"
           cat "$CFG"
           echo "::notice title=androv3::avd=verified"
-          echo "Phone config: RAM=$RAMT MB cores=$COREST storage=192G sparse LCD=1080x2400@440"
+          echo "Phone config: RAM=$RAMT MB cores=$COREST storage=${DATAMB}MB dynamic sparse LCD=1080x2400@440"
 
       - name: "6/9 Boot Android 16 + Tweaks"
         run: |
@@ -470,7 +478,7 @@ jobs:
             echo "| Android | $ANDRO_IMG |"
             echo "| Phone RAM | $PHONERAM MB |"
             echo "| Phone Cores | $PHONECORES |"
-            echo "| Storage | sparse 192G (jitni host disk khali) |"
+            echo "| Storage | dynamic sparse (AVD home free space ka 60%, max 60G) |"
             echo "| Stream | $(if [ "$ANDRO_MAXSIZE" = "0" ]; then echo native; else echo "$ANDRO_MAXSIZE px"; fi) / $ANDRO_BITRATE bps / $ANDRO_FPS fps (H.264 WebCodecs + Opus audio + clipboard sync + MJPG fallback) |"
             echo "| Edge proxy | 127.0.0.1:8080 (Basic-Auth + session cookie) |"
             echo ""
