@@ -41,7 +41,7 @@ jobs:
       - name: "0/9 Preflight + KVM check"
         run: |
           set -Eeuo pipefail
-          echo "::notice::ANDRO CLOUD v2026.3.3 // Android 16 Cloud Phone // Linux host"
+          echo "::notice::ANDRO CLOUD v2026.3.4 // Android 16 Cloud Phone // Linux host"
           echo "runner: $RUNNER_NAME | $(uname -m)"
           RAM="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
           CORES="$(nproc)"
@@ -174,6 +174,17 @@ jobs:
           else
             echo "emulator shared libs OK"
           fi
+          echo "=== adbkey pre-generate (Play Store image adb auth bypass) ==="
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/adbkey" ]; then
+            ssh-keygen -t rsa -b 2048 -m PEM -f "$HOME/.android/adbkey" -N "" -q 2>/dev/null || true
+            echo "adbkey generated: $(ls -la "$HOME/.android/adbkey" 2>/dev/null || echo MISSING)"
+          else
+            echo "adbkey already exists"
+          fi
+          {
+            echo "ADB_VENDOR_KEYS=$HOME/.android/adbkey"
+          } >> "$GITHUB_ENV"
           echo "=== avdmanager create avd ==="
           AVAIL_MB="$(df -BM /home/runner/.android 2>/dev/null | tail -1 | awk '{print int($4)}' | tr -d 'M')"
           if [ -z "$AVAIL_MB" ] || [ "$AVAIL_MB" -le 0 ]; then AVAIL_MB="$(df -BM / | tail -1 | awk '{print int($4)}' | tr -d 'M')"; fi
@@ -291,23 +302,40 @@ jobs:
         run: |
           set -Eeuo pipefail
           ADB="/tmp/andro/sdk/platform-tools/adb"
+          export ADB_VENDOR_KEYS="${ADB_VENDOR_KEYS:-$HOME/.android/adbkey}"
+          if [ ! -f "$HOME/.android/adbkey" ]; then
+            ssh-keygen -t rsa -b 2048 -m PEM -f "$HOME/.android/adbkey" -N "" -q 2>/dev/null || true
+          fi
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          "$ADB" kill-server > /dev/null 2>&1 || true
           nohup /tmp/andro/sdk/emulator/emulator -avd cloudphone -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -no-metrics > /tmp/andro/emu.log 2>&1 &
           echo $! > /tmp/andro/emu.pid
-          echo "emulator starting (pehli baar 3-10 min)..."
+          echo "emulator starting (pehli baar 5-15 min, android-36 + swiftshader cold boot slow hota hai)..."
           "$ADB" start-server > /dev/null 2>&1 || true
           ok=""
-          for i in $(seq 1 60); do
-            if [ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then ok=1; break; fi
+          for i in $(seq 1 90); do
+            ST="$(adb_shell_state() { "$ADB" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'; }; adb_shell_state)"
+            if [ "$ST" = "1" ]; then ok=1; break; fi
             if ! kill -0 "$(cat /tmp/andro/emu.pid)" 2>/dev/null; then
               echo "::error::emulator process died - logs:"
               tail -40 /tmp/andro/emu.log || true
               exit 1
             fi
-            if [ $((i % 6)) -eq 0 ]; then echo "boot wait: $((i * 20))s..."; fi
+            UNAUTH="$(grep -c 'unauthorized' <("$ADB" devices 2>/dev/null) || true)"
+            if [ "${UNAUTH:-0}" -gt 0 ] && [ $((i % 9)) -eq 1 ]; then
+              echo "device unauthorized — adbkey re-auth attempt"
+              "$ADB" kill-server || true
+              sleep 2
+              "$ADB" start-server > /dev/null 2>&1 || true
+            fi
+            if [ $((i % 9)) -eq 0 ]; then
+              echo "boot wait: $((i * 20))s... (adb: $("$ADB" devices 2>/dev/null | tail -n +2 | head -2 | tr '\n' ' '))"
+            fi
             sleep 20
           done
           if [ -z "$ok" ]; then
-            echo "::error::Android boot timeout (20 min)"
+            echo "::error::Android boot timeout (30 min)"
+            "$ADB" devices || true
             tail -40 /tmp/andro/emu.log || true
             exit 1
           fi
